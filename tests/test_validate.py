@@ -41,7 +41,8 @@ class HappyPath(unittest.TestCase):
         self.assertEqual(validate(VALID, now=NOW), [])
 
     def test_examples_validate_clean(self):
-        for name in ("sales-ops-bot", "coding-agent", "personal-assistant"):
+        for name in ("sales-ops-bot", "coding-agent", "personal-assistant",
+                     "delegating-lead"):
             m = load_manifest_file(ROOT / "examples" / f"{name}.yaml")
             errors, _ = split_findings(validate(m))
             self.assertEqual(errors, [], f"{name}: {errors}")

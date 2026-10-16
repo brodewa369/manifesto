@@ -1,0 +1,50 @@
+{
+  "agent": "coding-agent",
+  "defaultEffect": "deny",
+  "delegations": [],
+  "deny": [
+    "fs.delete",
+    "gmail.send",
+    "payments.charge"
+  ],
+  "denyAllExceptGranted": true,
+  "disclaimer": "dialects are approximations, not certified vendor schemas — review before enforcing",
+  "generator": "manifesto 0.2.0",
+  "grants": [
+    [
+      "fs.read",
+      true
+    ],
+    [
+      "fs.write",
+      {
+        "to_domains": [
+          "example.internal"
+        ]
+      }
+    ],
+    [
+      "github.read",
+      true
+    ],
+    [
+      "github.write",
+      true
+    ],
+    [
+      "http.get",
+      true
+    ],
+    [
+      "shell.exec",
+      {
+        "approval": "required",
+        "rate": {
+          "max": 20,
+          "window": "PT1H"
+        }
+      }
+    ]
+  ],
+  "version": 1
+}

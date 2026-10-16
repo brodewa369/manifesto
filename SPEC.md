@@ -1,7 +1,7 @@
 # RFC-0001: The `agent.manifest.yaml` job contract
 
 - Status: Accepted
-- Version: 0.1.0
+- Version: 0.2.0
 - Author: Brodewa
 - Updated: 2026-10-17
 
@@ -50,6 +50,7 @@ A manifest is a single YAML mapping. Fields:
 | `ttl`         | ISO date (`YYYY-MM-DD`)   | no\*     | When all grants expire. Missing → validator *warning*. |
 | `grants`      | map: grant-key → `true` \| object | no | What the agent MAY do. |
 | `deny`        | list of grant-keys        | no       | Explicit refusals (clarity / future soft-deny). |
+| `delegations` | list of delegation objects | no      | Attenuated sub-agent grants (see §3.3). |
 | `audit`       | map                       | no       | `receipt_of: [grant-keys]` — require receipts for these grants. |
 | `meta`        | map (free-form)           | no       | Anything else, ignored by the validator. |
 
@@ -88,6 +89,54 @@ A grant value is either:
 - **Money verbs** (`payments.charge`, `payments.refund`, `payments.payout`) must
   carry a numeric `amount.max` — a bare `true` is *unbounded* and rejected.
 - **`shell.exec`** is unbounded by nature, so it must carry `approval: required`.
+
+### 3.3 Delegation — attenuation only (RFC-0001 § Delegation)
+
+An agent may hand a **narrowed slice** of its power to a sub-agent. A
+delegation is pure **attenuation**: it may only ever *reduce* what the
+delegating agent itself holds — never widen it. Each entry in `delegations:`:
+
+| Field          | Type            | Required | Meaning |
+|----------------|-----------------|----------|---------|
+| `from`         | string          | **yes**  | The delegating agent. Must equal this contract's `agent` so the parent's grant set is resolvable. |
+| `to`           | string          | **yes**  | The receiving sub-agent. |
+| `narrower_than`| map (grant-key → `true` \\| object) | **yes** | The child's effective grant set — must be a *subset*, narrowed. |
+| `purpose`      | string          | **yes**  | Why the delegation exists. Missing → validator *error* (`delegation_missing_purpose`). |
+| `ttl`          | ISO date        | no       | When the delegation lapses. |
+
+The validator enforces attenuation (`delegation_escalation` on violation):
+
+1. **Key inclusion** — every grant in `narrower_than` must already be granted
+   to the delegating agent (`from`). Delegating a verb the parent lacks is
+   escalation.
+2. **Per-verb narrowing** — for each shared verb, the child's constraint object
+   must be *narrower than or equal to* the parent's:
+   - a parent cap (`amount.max`, `rate.max`) must be carried by the child at a
+     value **≤** the parent's — dropping the cap, or raising it, is escalation;
+   - a parent `to_domains` must be narrowed to a **subset**;
+   - a parent `approval` gate must be kept at **equal or greater** strictness
+     (`required` ⊒ `readonly-allowed`).
+
+   The tricky, deliberate consequence: if the parent holds a verb **only via a
+   constraint object** (e.g. `payments.charge` capped at $500/day), a child
+   that tries to take that verb as a bare `true` (unbounded) is **rejected** —
+   a child can never hold a power the parent holds only under constraint.
+
+A contract with no escalations explains as an attenuation chain, e.g.
+`manifesto explain`:
+
+```text
+delegations:
+  sales-lead -> sales-ops (narrowed: send email at most 20 per P1D, charge money up to 50 USD per P1D; purpose: coverage handoff)
+```
+
+**Interop note.** This attenuation model is deliberately inspired by **Macaroon**
+and **Biscuit** caveat/discharge semantics: a root caveat set that a downstream
+token may only *narrow*, never discharge into more authority. manifesto does not
+implement a token format — it is a *declarative* check that the same narrowing
+discipline holds at the contract level, so any enforcer that speaks
+Macaroon/Biscuit-style attenuation can consume the exported, provably-narrower
+delegation set directly.
 
 ## 4. Full example
 
@@ -144,6 +193,29 @@ Exports are **deterministic**: the same manifest always produces the same bytes
 (sorted keys, no timestamps), so exports are diff-able and safe to commit.
 
 ## 6. Changelog
+
+### 0.2.0 — 2026-10-17
+- **Formal machine-readable schema** published at
+  `schema/agent-manifest.schema.json` (JSON Schema draft-07 subset: types,
+  `required`, `enum`, `pattern`, `propertyNames`, `additionalProperties`,
+  local `$ref`). The validator's **structural** layer is now *derived from this
+  file* via a tiny embedded draft-07-subset engine (`manifesto.jsonschema_mini`)
+  — no `jsonschema` dependency. A canary test mutates the schema (e.g. makes
+  `ttl` required) and proves validator behaviour follows the file.
+- **Scanner is fail-closed.** Inference happens only on an *exact* match against
+  an explicit server table; an unrecognized tool-server or an unparseable config
+  yields `unknown: true`, never a guessed grant. Every inferred grant is
+  annotated `<file>:<line>`. New findings: `type-suspect`, `credential-orphan`,
+  `expired-ttl`, `unbounded-grant`.
+- **Delegation attenuation** (`delegations:`): a child's `narrower_than` grant
+  set must be a narrowed subset of the parent's (`from`), with `purpose`
+  required. Escalation — including taking a verb the parent holds only via a
+  constraint as a bare `true` — is rejected. `explain` renders attenuation
+  chains; the model is inspired by Macaroon/Biscuit caveat semantics (§3.3).
+- **Golden-file export suite** (`fixtures/golden/*.expected`) byte-compares both
+  dialects for determinism; labeled APPROXIMATION with justification in
+  `fixtures/MANIFEST.md`.
+- Exporters now carry `delegations` deterministically.
 
 ### 0.1.0 — 2026-10-17
 - Initial release.

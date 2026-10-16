@@ -1,0 +1,61 @@
+{
+  "agent": "sales-lead",
+  "defaultEffect": "deny",
+  "delegations": [
+    {
+      "from": "sales-lead",
+      "narrower_than": {
+        "gmail.send": {
+          "rate": {
+            "max": 20,
+            "window": "P1D"
+          }
+        },
+        "payments.charge": {
+          "amount": {
+            "currency": "USD",
+            "max": 50,
+            "window": "P1D"
+          }
+        }
+      },
+      "purpose": "coverage handoff",
+      "to": "sales-ops",
+      "ttl": "2027-06-30"
+    }
+  ],
+  "deny": [
+    "payments.payout"
+  ],
+  "denyAllExceptGranted": true,
+  "disclaimer": "dialects are approximations, not certified vendor schemas — review before enforcing",
+  "generator": "manifesto 0.2.0",
+  "grants": [
+    [
+      "gmail.send",
+      {
+        "rate": {
+          "max": 100,
+          "window": "P1D"
+        }
+      }
+    ],
+    [
+      "payments.charge",
+      {
+        "amount": {
+          "currency": "USD",
+          "max": 500,
+          "window": "P1D"
+        }
+      }
+    ],
+    [
+      "shell.exec",
+      {
+        "approval": "required"
+      }
+    ]
+  ],
+  "version": 1
+}

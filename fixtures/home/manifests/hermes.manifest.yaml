@@ -1,0 +1,10 @@
+# SYNTHETIC fixture — a manifest deliberately left EXPIRED and carrying an
+# UNBOUNDED grant, so `manifesto scan --home fixtures/home` surfaces the
+# `expired-ttl` and `unbounded-grant` findings. Not a real machine.
+agent: hermes-agent
+owner: Synthetic User
+description: Fixture contract left expired + unbounded on purpose.
+ttl: 2020-01-01          # in the past -> expired-ttl finding
+grants:
+  fs.read: true
+  shell.exec: true       # unbounded by nature -> unbounded-grant finding

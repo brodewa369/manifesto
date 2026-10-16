@@ -1,0 +1,41 @@
+{
+  "agent": "personal-assistant",
+  "defaultEffect": "deny",
+  "delegations": [],
+  "deny": [
+    "gmail.delete",
+    "gmail.send",
+    "payments.charge",
+    "shell.exec"
+  ],
+  "denyAllExceptGranted": true,
+  "disclaimer": "dialects are approximations, not certified vendor schemas — review before enforcing",
+  "generator": "manifesto 0.2.0",
+  "grants": [
+    [
+      "calendar.list",
+      true
+    ],
+    [
+      "calendar.read",
+      true
+    ],
+    [
+      "contacts.read",
+      true
+    ],
+    [
+      "gmail.read",
+      true
+    ],
+    [
+      "gmail.search",
+      true
+    ],
+    [
+      "http.get",
+      true
+    ]
+  ],
+  "version": 1
+}

@@ -1,4 +1,4 @@
-"""Schema, mini-YAML parser, and the hand-rolled validator/linter.
+"""Schema, mini-YAML parser, and the two-layer validator/linter.
 
 This module is the heart of manifesto. It contains:
 
@@ -6,8 +6,21 @@ This module is the heart of manifesto. It contains:
   ``agent.manifest.yaml`` — maps, lists, inline lists, scalars, comments;
 * the manifest registry (``KNOWN``) describing which ``<system>.<verb>`` keys
   are groupable, and which verbs carry an inherent *bound* requirement;
-* ``validate()`` — a hand-rolled linter (deliberately **no** ``jsonschema``
-  dependency) that reports key-paths, human explanations, and fix hints.
+* ``validate()`` — a **two-layer** linter that reports key-paths, human
+  explanations, and fix hints:
+
+  1. **Structural layer** — derived from the *published* JSON Schema
+     (``schema/agent-manifest.schema.json``) via the tiny draft-07-subset
+     engine in :mod:`manifesto.jsonschema_mini`. Types, required fields,
+     enums, patterns, and unknown-key rejection all come from the schema
+     *file*; mutating that file changes behaviour with no code change
+     (see ``tests/test_schema_canary.py``).
+  2. **Semantic layer** — registry + business rules that plain JSON Schema
+     cannot express: unknown-verb suggestions, bounded-required verbs,
+     shadowed grants, ttl date parsing, audit cross-references, and
+     delegation attenuation (``delegations`` subset/narrowing).
+
+No ``jsonschema`` dependency — pure standard library.
 
 Findings carry a ``severity``:
 
@@ -23,13 +36,14 @@ from collections import namedtuple
 from datetime import date, datetime
 from pathlib import Path
 
+from .jsonschema_mini import ERROR, Engine  # noqa: F401  (ERROR re-exported)
+
 # --------------------------------------------------------------------------- #
 # Finding
 # --------------------------------------------------------------------------- #
 
 Finding = namedtuple("Finding", ["keypath", "code", "severity", "message", "hint"])
 
-ERROR = "error"
 WARNING = "warning"
 
 
@@ -77,14 +91,59 @@ APPROVAL_GATED = {"shell.exec"}
 
 APPROVAL_MODES = {"required", "readonly-allowed"}
 
+#: Approval strictness ordering (higher is stricter) — used by delegation
+#: attenuation: a child must be at least as strict as its parent.
+APPROVAL_STRICTNESS = {"readonly-allowed": 1, "required": 2}
+
 TOP_LEVEL_KEYS = {"agent", "version", "owner", "description", "ttl",
-                  "grants", "deny", "audit", "meta"}
+                  "grants", "deny", "delegations", "audit", "meta"}
 GRANT_OBJECT_KEYS = {"amount", "rate", "to_domains", "approval"}
 AMOUNT_KEYS = {"max", "currency", "window"}
 RATE_KEYS = {"max", "window"}
 AUDIT_KEYS = {"receipt_of"}
+DELEGATION_KEYS = {"from", "to", "narrower_than", "purpose", "ttl"}
 
 EXAMPLE_NAMESPACE = "gmail.read"
+
+# --------------------------------------------------------------------------- #
+# Published JSON Schema (the structural layer's source of truth)
+# --------------------------------------------------------------------------- #
+
+#: Locations searched for ``agent-manifest.schema.json``, in order. The first
+#: hit wins. Editable/src checkouts find the repo-level ``schema/`` dir;
+#: packaged installs find the bundled copy next to this module.
+_SCHEMA_RELATIVE = ("schema", "agent-manifest.schema.json")
+
+
+def schema_path() -> Path:
+    """Resolve the published schema document.
+
+    Raises ``ManifestError`` if no schema file can be found — the validator
+    refuses to run without its published schema (fail-closed).
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2].joinpath(*_SCHEMA_RELATIVE),   # repo root (src layout)
+        here.parent.joinpath(*_SCHEMA_RELATIVE),       # bundled in package
+        Path.cwd().joinpath(*_SCHEMA_RELATIVE),        # cwd fallback
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    raise ManifestError(
+        "cannot locate agent-manifest.schema.json (looked in: "
+        + ", ".join(str(c) for c in candidates) + ")")
+
+
+def load_schema(path=None) -> dict:
+    """Load the published schema document from ``path`` (or the default)."""
+    p = Path(path) if path else schema_path()
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ManifestError(f"cannot read schema {p}: {exc}") from exc
+    except ValueError as exc:
+        raise ManifestError(f"schema {p} is not valid JSON: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -325,45 +384,103 @@ def _suggest(word, pool):
 
 
 # --------------------------------------------------------------------------- #
-# Validator
+# Delegation attenuation helper
 # --------------------------------------------------------------------------- #
 
-def validate(manifest, *, now=None):
-    """Lint a loaded manifest. Returns a list of :class:`Finding` (sorted)."""
+def is_narrower(child, parent) -> bool:
+    """True if grant value ``child`` is narrower-than-or-equal to ``parent``.
+
+    Attenuation (inspired by Macaroon/Biscuit caveats): a delegation may only
+    *narrow* power, never widen it.
+
+    * parent ``true`` (unbounded)  -> any child value is within scope;
+    * child ``true`` over a bounded parent -> widening (escalation) -> False;
+    * both objects -> every constraint the parent imposes must be imposed by
+      the child at least as strictly (amount/rate caps <=, to_domains a
+      subset, approval no weaker). The child may add further constraints.
+    """
+    if parent is True:
+        return True
+    if child is True:
+        return False  # child unbounded over a bounded parent = escalation
+    if not isinstance(child, dict) or not isinstance(parent, dict):
+        return False
+
+    # amount cap: child must cap at least as tightly (and must keep the cap)
+    p_amt = parent.get("amount")
+    if isinstance(p_amt, dict):
+        c_amt = child.get("amount")
+        if not isinstance(c_amt, dict):
+            return False
+        p_max, c_max = p_amt.get("max"), c_amt.get("max")
+        if _is_number(p_max) and not (_is_number(c_max) and c_max <= p_max):
+            return False
+
+    # rate cap
+    p_rate = parent.get("rate")
+    if isinstance(p_rate, dict):
+        c_rate = child.get("rate")
+        if not isinstance(c_rate, dict):
+            return False
+        p_max, c_max = p_rate.get("max"), c_rate.get("max")
+        if _is_number(p_max) and not (_is_number(c_max) and c_max <= p_max):
+            return False
+
+    # outbound domains: child must be a subset
+    p_doms = parent.get("to_domains")
+    if isinstance(p_doms, list):
+        c_doms = child.get("to_domains")
+        if not (isinstance(c_doms, list) and set(c_doms).issubset(set(p_doms))):
+            return False
+
+    # approval gate: child must be at least as strict
+    p_appr = parent.get("approval")
+    if p_appr is not None:
+        c_appr = child.get("approval")
+        if not (c_appr is not None
+                and APPROVAL_STRICTNESS.get(c_appr, 0) >= APPROVAL_STRICTNESS.get(p_appr, 0)):
+            return False
+
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Validator (structural layer derived from schema + semantic layer)
+# --------------------------------------------------------------------------- #
+
+def validate(manifest, *, now=None, schema_path_=None):
+    """Lint a loaded manifest. Returns a list of :class:`Finding` (sorted).
+
+    ``schema_path_`` optionally points at an alternate schema document (used by
+    the canary test to prove behaviour derives from the schema *file*).
+    """
     now = now or date.today()
     findings: list[Finding] = []
 
+    # ---- structural layer: derived from the published schema ------------- #
+    schema = load_schema(schema_path_)
+    for sf in Engine(schema).validate(manifest):
+        findings.append(Finding(sf.keypath, sf.code, sf.severity, sf.message, sf.hint))
+
+    # ---- semantic layer: registry + business rules ----------------------- #
+    if isinstance(manifest, dict):
+        _semantic(manifest, now, findings)
+
+    findings.sort(key=lambda f: (f.keypath, f.code, f.message))
+    return findings
+
+
+def _semantic(manifest, now, findings):
     def add(keypath, code, severity, message, hint=""):
         findings.append(Finding(keypath, code, severity, message, hint))
 
-    if not isinstance(manifest, dict):
-        add("", "bad_type", ERROR, "manifest root must be a mapping", "start with `agent: <name>`")
-        return findings
-
-    # ---- top-level unknown keys ------------------------------------------- #
-    for key in manifest:
-        if key not in TOP_LEVEL_KEYS:
-            add(key, "unknown_key", ERROR,
-                f"unknown top-level key '{key}'",
-                f"allowed: {', '.join(sorted(TOP_LEVEL_KEYS))}")
-
-    # ---- agent (required) -------------------------------------------------- #
-    agent = manifest.get("agent")
-    if agent is None or (isinstance(agent, str) and not agent.strip()):
-        add("agent", "missing_agent", ERROR,
-            "required field 'agent' is missing or empty",
-            "add `agent: my-agent-name`")
-    elif not isinstance(agent, str):
-        add("agent", "bad_type", ERROR, "'agent' must be a string",
-            "e.g. `agent: sales-ops-bot`")
-
-    # ---- ttl --------------------------------------------------------------- #
+    # ---- ttl (date semantics; structural layer only checks it is a string) #
     ttl_raw = manifest.get("ttl")
     if ttl_raw is None:
         add("ttl", "missing_ttl", WARNING,
             "no `ttl` set — grants never expire on their own",
             "add `ttl: YYYY-MM-DD` (ISO date) so grants lapse")
-    else:
+    elif isinstance(ttl_raw, str):
         ttl_date = _parse_iso_date(ttl_raw)
         if ttl_date is None:
             add("ttl", "bad_ttl", ERROR, f"'ttl' is not an ISO date: {ttl_raw!r}",
@@ -372,22 +489,17 @@ def validate(manifest, *, now=None):
             add("ttl", "expired", WARNING,
                 f"ttl {ttl_date.isoformat()} is in the past — the contract has expired",
                 "bump `ttl` or retire this agent")
+    # non-string ttl is already a structural bad_type; nothing more to do here.
 
-    # ---- deny -------------------------------------------------------------- #
+    # ---- deny (registry lookups for shadow set) --------------------------- #
     deny = manifest.get("deny")
     deny_namespaces = set()
-    if deny is not None:
-        if not isinstance(deny, list):
-            add("deny", "bad_type", ERROR, "'deny' must be a list",
-                "e.g. `deny: [shell.exec, payments.charge]`")
-            deny = []
+    if isinstance(deny, list):
         for i, entry in enumerate(deny):
-            kp = f"deny[{i}]"
             if not isinstance(entry, str):
-                add(kp, "bad_type", ERROR, "deny entries must be strings", EXAMPLE_NAMESPACE)
-                continue
+                continue  # structural bad_type already emitted for non-strings
+            kp = f"deny[{i}]"
             if "." not in entry:
-                # a bare system namespace is allowed in deny
                 if entry in KNOWN:
                     deny_namespaces.add(entry)
                 else:
@@ -403,29 +515,14 @@ def validate(manifest, *, now=None):
                 _check_namespace(kp, system, verb, add)
                 deny_namespaces.add(entry)
 
-    # ---- grants ------------------------------------------------------------ #
+    # ---- grants (registry, bounds, shadow) -------------------------------- #
     grants = manifest.get("grants")
     grant_keys = []
-    if grants is None:
-        add("grants", "missing_grants", WARNING, "no `grants` declared — nothing is permitted",
-            "add a `grants:` map, e.g. `gmail.read: true`")
-    elif not isinstance(grants, dict):
-        add("grants", "bad_type", ERROR, "'grants' must be a mapping of grant-key -> true|object",
-            "e.g. `grants:\n  gmail.read: true`")
-    else:
+    if isinstance(grants, dict):
         for key, value in grants.items():
             kp = f"grants.{key}"
             if not isinstance(key, str) or not NAMESPACE_RE.match(key):
-                if isinstance(key, str) and key.count(".") != 1:
-                    add(kp, "ungroupable_verb", ERROR,
-                        f"'{key}' is not a groupable <system>.<verb> key",
-                        "the verb namespace is exactly two segments: `<system>.<verb>`, "
-                        f"e.g. {EXAMPLE_NAMESPACE}")
-                    continue
-                add(kp, "ungroupable_verb", ERROR,
-                    f"'{key}' is not a valid <system>.<verb> key",
-                    f"use lowercase `<system>.<verb>`, e.g. {EXAMPLE_NAMESPACE}")
-                continue
+                continue  # structural propertyNames already flagged ungroupable
             system, _, verb = key.partition(".")
             if _check_namespace(kp, system, verb, add) is False:
                 continue
@@ -443,32 +540,65 @@ def validate(manifest, *, now=None):
 
     # ---- audit ------------------------------------------------------------- #
     audit = manifest.get("audit")
-    if audit is not None:
-        if not isinstance(audit, dict):
-            add("audit", "bad_type", ERROR, "'audit' must be a mapping",
-                "e.g. `audit:\n  receipt_of: [payments.charge]`")
-        else:
-            for key in audit:
-                if key not in AUDIT_KEYS:
-                    add(f"audit.{key}", "unknown_key", ERROR,
-                        f"unknown audit key '{key}'",
-                        f"allowed: {', '.join(sorted(AUDIT_KEYS))}")
-            receipts = audit.get("receipt_of")
-            if receipts is not None:
-                if not isinstance(receipts, list):
-                    add("audit.receipt_of", "bad_type", ERROR,
-                        "'audit.receipt_of' must be a list of grant keys",
-                        "e.g. `receipt_of: [payments.charge]`")
-                else:
-                    granted = set(grant_keys)
-                    for i, r in enumerate(receipts):
-                        if r not in granted:
-                            add(f"audit.receipt_of[{i}]", "audit_unknown_grant", WARNING,
-                                f"audit asks for receipts of '{r}' which is not a granted key",
-                                "reference an existing grant key")
+    if isinstance(audit, dict):
+        for key in audit:
+            if key not in AUDIT_KEYS:
+                add(f"audit.{key}", "unknown_key", ERROR,
+                    f"unknown audit key '{key}'",
+                    f"allowed: {', '.join(sorted(AUDIT_KEYS))}")
+        receipts = audit.get("receipt_of")
+        if isinstance(receipts, list):
+            granted = set(grant_keys)
+            for i, r in enumerate(receipts):
+                if r not in granted:
+                    add(f"audit.receipt_of[{i}]", "audit_unknown_grant", WARNING,
+                        f"audit asks for receipts of '{r}' which is not a granted key",
+                        "reference an existing grant key")
 
-    findings.sort(key=lambda f: (f.keypath, f.code, f.message))
-    return findings
+    # ---- delegations (attenuation: child ⊆ parent, narrowed) -------------- #
+    _check_delegations(manifest, grant_keys, grants, add)
+
+
+def _check_delegations(manifest, grant_keys, grants, add):
+    delegations = manifest.get("delegations")
+    if not isinstance(delegations, list):
+        return
+    parent_agent = manifest.get("agent")
+    parent_grants = grants if isinstance(grants, dict) else {}
+
+    for i, d in enumerate(delegations):
+        if not isinstance(d, dict):
+            continue  # structural bad_type already emitted
+        kp = f"delegations[{i}]"
+        frm = d.get("from")
+        child = d.get("narrower_than")
+
+        # the delegation must be resolvable against THIS contract as parent
+        if isinstance(frm, str) and isinstance(parent_agent, str) and frm != parent_agent:
+            add(f"{kp}.from", "unknown_parent", ERROR,
+                f"delegation from '{frm}' cannot be resolved against this "
+                f"contract's agent '{parent_agent}'",
+                "set `from` to this contract's agent so attenuation is checkable")
+            continue
+
+        if not isinstance(child, dict):
+            continue  # structural bad_type already emitted for non-object
+
+        for key, cval in child.items():
+            gkp = f"{kp}.narrower_than.{key}"
+            if not isinstance(key, str) or not NAMESPACE_RE.match(key):
+                continue  # structural propertyNames already flagged ungroupable
+            if key not in parent_grants:
+                add(gkp, "delegation_escalation", ERROR,
+                    f"delegated grant '{key}' is not granted to the delegating "
+                    f"agent '{parent_agent}'",
+                    "delegate only a subset of the parent's grants")
+                continue
+            if not is_narrower(cval, parent_grants[key]):
+                add(gkp, "delegation_escalation", ERROR,
+                    f"delegated grant '{key}' is not narrower than the parent's "
+                    "grant — a delegation may only narrow power, never widen it",
+                    "tighten the child's constraints to <= the parent's, or drop it")
 
 
 def _check_namespace(keypath, system, verb, add) -> bool:
@@ -508,9 +638,7 @@ def _validate_grant_value(keypath, key, value, add):
         return
 
     if not isinstance(value, dict):
-        add(keypath, "bad_type", ERROR,
-            f"grant '{key}' must be `true` or a constraint object, got {type(value).__name__}",
-            f"use `true` or a map with keys: {', '.join(sorted(GRANT_OBJECT_KEYS))}")
+        # structural bad_type already covers this; keep semantic bail-out safe
         return
 
     if not value:
@@ -529,14 +657,7 @@ def _validate_grant_value(keypath, key, value, add):
     if "amount" in value:
         amt = value["amount"]
         kp = f"{keypath}.amount"
-        if not isinstance(amt, dict):
-            add(kp, "bad_type", ERROR, "'amount' must be a mapping with max/currency/window",
-                "e.g. `amount: { max: 500, currency: USD, window: P1D }`")
-        else:
-            for sub in amt:
-                if sub not in AMOUNT_KEYS:
-                    add(f"{kp}.{sub}", "unknown_key", ERROR,
-                        f"unknown amount key '{sub}'", f"allowed: {', '.join(sorted(AMOUNT_KEYS))}")
+        if isinstance(amt, dict):
             if "max" not in amt or not _is_number(amt.get("max")):
                 add(f"{kp}.max", "unbounded_grant", ERROR,
                     f"grant '{key}' has an amount with no numeric `max` — still unbounded",
@@ -552,14 +673,7 @@ def _validate_grant_value(keypath, key, value, add):
     if "rate" in value:
         rate = value["rate"]
         kp = f"{keypath}.rate"
-        if not isinstance(rate, dict):
-            add(kp, "bad_type", ERROR, "'rate' must be a mapping with max/window",
-                "e.g. `rate: { max: 10, window: P1H }`")
-        else:
-            for sub in rate:
-                if sub not in RATE_KEYS:
-                    add(f"{kp}.{sub}", "unknown_key", ERROR,
-                        f"unknown rate key '{sub}'", f"allowed: {', '.join(sorted(RATE_KEYS))}")
+        if isinstance(rate, dict):
             if "max" not in rate or not _is_number(rate.get("max")):
                 add(f"{kp}.max", "unbounded_grant", ERROR,
                     f"grant '{key}' has a rate with no numeric `max` — still unbounded",
@@ -568,23 +682,7 @@ def _validate_grant_value(keypath, key, value, add):
                 add(f"{kp}.window", "missing_window", WARNING,
                     f"grant '{key}' rate has no time window", "e.g. `window: P1H`")
 
-    # to_domains
-    if "to_domains" in value:
-        doms = value["to_domains"]
-        kp = f"{keypath}.to_domains"
-        if not isinstance(doms, list) or not all(isinstance(d, str) for d in doms):
-            add(kp, "bad_type", ERROR, "'to_domains' must be a list of domain strings",
-                "e.g. `to_domains: [example.com]`")
-
-    # approval
-    if "approval" in value:
-        appr = value["approval"]
-        if appr not in APPROVAL_MODES:
-            add(f"{keypath}.approval", "bad_approval", ERROR,
-                f"approval must be one of {sorted(APPROVAL_MODES)}, got {appr!r}",
-                "use `approval: required` or `approval: readonly-allowed`")
-
-    # bound requirement met?
+    # bound requirement met? (to_domains/approval structural types already checked)
     if req is not None:
         bound_field, why = req
         satisfied = False

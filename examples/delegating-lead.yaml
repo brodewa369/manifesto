@@ -1,0 +1,43 @@
+# delegating-lead — a sales lead that delegates a NARROWED slice to a
+# sales-ops sub-agent. The delegation is attenuation-only: every constraint the
+# child carries is at least as tight as the parent's (RFC-0001 § Delegation).
+agent: sales-lead
+version: 1
+owner: revenue-team
+description: Delegates a narrowed slice of its power to a sales-ops sub-agent.
+ttl: 2027-06-30
+
+grants:
+  gmail.send:
+    rate:
+      max: 100
+      window: P1D
+  payments.charge:
+    amount:
+      max: 500
+      currency: USD
+      window: P1D
+  shell.exec:
+    approval: required
+
+delegations:
+  - from: sales-lead
+    to: sales-ops
+    narrower_than:
+      gmail.send:
+        rate:
+          max: 20
+          window: P1D
+      payments.charge:
+        amount:
+          max: 50
+          currency: USD
+          window: P1D
+    purpose: coverage handoff
+    ttl: 2027-06-30
+
+deny:
+  - payments.payout
+
+meta:
+  team: revenue

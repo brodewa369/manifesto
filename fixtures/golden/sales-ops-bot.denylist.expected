@@ -1,0 +1,47 @@
+{
+  "agent": "sales-ops-bot",
+  "defaultEffect": "deny",
+  "delegations": [],
+  "deny": [
+    "fs.delete",
+    "payments.payout",
+    "shell.exec"
+  ],
+  "denyAllExceptGranted": true,
+  "disclaimer": "dialects are approximations, not certified vendor schemas — review before enforcing",
+  "generator": "manifesto 0.2.0",
+  "grants": [
+    [
+      "calendar.create",
+      true
+    ],
+    [
+      "calendar.read",
+      true
+    ],
+    [
+      "gmail.draft",
+      true
+    ],
+    [
+      "gmail.read",
+      true
+    ],
+    [
+      "gmail.send",
+      true
+    ],
+    [
+      "payments.charge",
+      {
+        "amount": {
+          "currency": "USD",
+          "max": 500,
+          "window": "P1D"
+        },
+        "approval": "readonly-allowed"
+      }
+    ]
+  ],
+  "version": 1
+}

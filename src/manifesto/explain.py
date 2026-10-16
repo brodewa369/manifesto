@@ -58,6 +58,17 @@ def _bound_suffix(value) -> str:
     return (" " + "; ".join(parts)) if parts else ""
 
 
+def _delegation_line(d) -> str:
+    """Render one delegation as a readable attenuation chain."""
+    frm = d.get("from", "?")
+    to = d.get("to", "?")
+    child = d.get("narrower_than") if isinstance(d.get("narrower_than"), dict) else {}
+    parts = [describe(k) + _bound_suffix(v) for k, v in sorted(child.items())]
+    narrowed = ", ".join(parts) if parts else "nothing"
+    purpose = d.get("purpose") or "(no purpose)"
+    return f"{frm} -> {to} (narrowed: {narrowed}; purpose: {purpose})"
+
+
 def explain(manifest, *, now=None) -> str:
     """Render a plain-language summary of ``manifest``."""
     now = now or date.today()
@@ -117,6 +128,14 @@ def explain(manifest, *, now=None) -> str:
         lines.append("may: (nothing granted)")
     if may_not:
         lines.append("may NOT: " + ", ".join(may_not))
+
+    # delegation attenuation chains
+    delegations = manifest.get("delegations")
+    if isinstance(delegations, list) and delegations:
+        lines.append("delegations:")
+        for d in delegations:
+            if isinstance(d, dict):
+                lines.append("  " + _delegation_line(d))
 
     # risk badges
     badges = []

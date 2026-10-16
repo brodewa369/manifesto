@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "quantum-admin": {
+      "command": "npx",
+      "args": ["-y", "quantum-admin-mcp"],
+      "env": {
+        "QUANTUM_ADMIN_TOKEN": "REDACTED-SYNTHETIC-TOKEN"
+      }
+    }
+  }
+}

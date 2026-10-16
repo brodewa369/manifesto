@@ -31,11 +31,13 @@ proxy — enforcement stays with the enforcer.
 ## Features
 
 - **One portable contract** — `agent.manifest.yaml` is human-readable, diff-able, and enforcer-agnostic. See [SPEC.md](SPEC.md).
-- **Hand-rolled validator** — no `jsonschema`; catches unknown keys, unknown/ungroupable verbs (with "did you mean" suggestions), unbounded grants, empty grants, shadowed grants, and expired/missing ttl — each with a key-path and a fix hint.
+- **Formal machine-readable schema** — a published JSON Schema draft-07 subset at [`schema/agent-manifest.schema.json`](schema/agent-manifest.schema.json). The validator's **structural layer is derived from this file** via a tiny embedded engine (`manifesto/jsonschema_mini.py`) — mutate the schema and the behaviour follows (proven by a canary test). No `jsonschema` dependency.
+- **Two-layer validator** — structural checks (types, required, enums, key pattern, unknown keys) come from the schema; semantic checks (unknown/ungroupable verbs with "did you mean", unbounded grants, empty grants, shadowed grants, expired/missing ttl, audit cross-refs, delegation attenuation) come from the registry and business rules — each with a key-path and a fix hint.
 - **Bounded where it matters** — money verbs (`payments.charge/refund/payout`) require `amount.max`; `shell.exec` requires `approval: required`. Unbounded grants are rejected.
-- **Read-only discovery scanner** — parses hermes/claude/cursor/vscode MCP configs, crontab, and git identity; emits DRAFT manifests with provenance and a "credentials/tool-servers present but no manifest on file" finding. Fixture-testable; never touches your real configs in tests.
-- **Deterministic exporters** — AgentWard-style policy YAML and a platform-neutral deny-list JSON; same input always produces the same bytes.
-- **Plain-language `explain`** — turns a contract into a sentence with risk badges (`unbounded`, `expired`, `dominated`).
+- **Delegation attenuation** — `delegations:` hand a *narrowed slice* of an agent's power to a sub-agent; the child's `narrower_than` set must be a provable subset of the parent's, `purpose` required, escalation rejected (inspired by Macaroon/Biscuit caveats). `explain` renders the attenuation chain.
+- **Fail-closed discovery scanner** — parses hermes/claude/cursor/vscode MCP configs, crontab, and git identity; emits DRAFT manifests with `<file>:<line>` provenance. Inference happens **only on an exact server-table match** — an unknown tool-server or an unparseable config yields `unknown: true`, never a guess. Findings: `type-suspect`, `credential-orphan`, `expired-ttl`, `unbounded-grant`, `no_manifest`. Fixture-testable; never touches your real configs in tests.
+- **Deterministic exporters** — AgentWard-style policy YAML and a platform-neutral deny-list JSON; same input always produces the same bytes. A golden-file suite (`fixtures/golden/`) byte-compares every dialect (labeled APPROXIMATION in [`fixtures/MANIFEST.md`](fixtures/MANIFEST.md)).
+- **Plain-language `explain`** — turns a contract into a sentence with risk badges (`unbounded`, `expired`, `dominated`) and delegation chains.
 - **Zero dependencies** — pure stdlib. CI/cron-friendly exit codes (`0` clean, `1` findings, `2` usage) with `--strict` for gating warnings.
 
 ## Schema overview
@@ -59,6 +61,14 @@ grants:                       # anything not granted is DENIED by default
 deny:                         # explicit refusals (clarity / future soft-deny)
   - payments.payout
   - fs.delete
+
+delegations:                  # ATTENUATION only: hand a narrowed slice to a sub-agent
+  - from: sales-ops-bot       # must equal `agent` so the parent's grants are checkable
+    to: sales-ops
+    narrower_than:            # a provable SUBSET of the parent's grants
+      gmail.send: { rate: { max: 20, window: P1D } }
+    purpose: coverage handoff # REQUIRED — missing -> error
+    ttl: 2027-06-30
 
 audit:
   receipt_of: [payments.charge]
@@ -97,6 +107,8 @@ flowchart TD
 
 The scanner also reads `crontab.txt` under the scanned home (or `crontab -l` when scanning a real home) and the git `user.name` / `user.email`.
 
+Grant inference is **fail-closed**: a tool-server is mapped to `<system>.<verb>` grants *only* on an **exact** match against the explicit server table. An unrecognized tool-server — or a config that cannot be parsed — is recorded as `unknown: true`, never a guessed capability, and is surfaced for review.
+
 ## Usage
 
 ```bash
@@ -109,8 +121,9 @@ manifesto scan                       # scan the real home
 manifesto scan --client hermes       # one client only
 manifesto scan --home fixtures/home  # point at a fixture dir (tests use this)
 
-# Plain-language summary + risk badges
+# Plain-language summary + risk badges + delegation chains
 manifesto explain examples/coding-agent.yaml
+manifesto explain examples/delegating-lead.yaml   # shows the attenuation chain
 
 # Export an enforcer dialect (approximations — review before enforcing)
 manifesto export examples/sales-ops-bot.yaml --target agentward
@@ -147,7 +160,7 @@ file you explicitly name with `-o`.
 
 ## Testing
 
-Zero third-party deps — plain `unittest`:
+Zero third-party deps — plain `unittest` (87 tests):
 
 ```bash
 python -m unittest discover -s tests -t .
@@ -155,11 +168,16 @@ python -m unittest discover -s tests -t .
 
 The matrix covers the validator's failure classes (unknown key, unknown verb,
 ungroupable verb, unbounded payment, unbounded shell, empty grant, shadowed
-grant, expired/missing ttl), the scanner against `fixtures/home/` (never the real
-home), and export determinism (same input → same bytes).
+grant, expired/missing ttl), the **schema-derivation canary**
+(`tests/test_schema_canary.py` — mutates the schema file and proves the
+validator follows), **delegation attenuation** including escalation rejections
+(`tests/test_delegation.py`), the **fail-closed scanner** against
+`fixtures/home/` and `fixtures/unknown-home/` (never the real home), and export
+determinism (same input → same bytes, byte-compared to `fixtures/golden/`).
 
-`examples/` holds three runnable contracts — `sales-ops-bot.yaml`,
-`coding-agent.yaml`, `personal-assistant.yaml` — validated in the test suite.
+`examples/` holds four runnable contracts — `sales-ops-bot.yaml`,
+`coding-agent.yaml`, `personal-assistant.yaml`, and `delegating-lead.yaml`
+(a valid delegation) — all validated in the test suite.
 
 ## Troubleshooting cookbook
 
@@ -174,11 +192,17 @@ home), and export determinism (same input → same bytes).
 | `missing_ttl` (warning) | Grants never lapse on their own | Add `ttl: YYYY-MM-DD`; use `--strict` to force it |
 | `no_manifest` (scan) | Tool-servers/credentials with no contract on file | Save the emitted draft as `manifests/<client>.manifest.yaml` |
 | `audit_unknown_grant` (warning) | `audit.receipt_of` names a non-granted key | Reference an existing grant key |
+| `delegation_escalation` | A delegation would widen (not narrow) the parent's power | Tighten the child's constraints to ≤ the parent's, or drop the grant |
+| `delegation_missing_purpose` | A delegation has no `purpose` | Add `purpose: <why>` to the delegation |
+| `unknown_parent` | Delegation `from` ≠ this contract's agent | Set `from` to this contract's `agent` so attenuation is checkable |
+| `credential-orphan` (scan) | Credentials present but no manifest on file | Write `manifests/<client>.manifest.yaml` declaring the tool-servers |
+| `type-suspect` (scan) | Tool-server name implies more verbs than inferred | Confirm the server's real capabilities; declare them explicitly |
+| `expired-ttl` / `unbounded-grant` (scan) | A manifest on file is expired / has an unbounded grant | Bump `ttl`; cap money with `amount.max`, gate `shell.exec` with `approval` |
 
 ## Roadmap
 
-- **v0.2** — attestation & signed receipts (`audit.receipt_of` backed by verifiable receipts); manifest signing.
-- **v0.3** — richer interop targets (AgentBound, Permit.io); JSON Schema emission for editors; a `manifesto diff` for drift between a live scan and a committed contract.
+- **v0.3** — attestation & signed receipts (`audit.receipt_of` backed by verifiable receipts); manifest signing.
+- **v0.4** — richer interop targets (AgentBound, Permit.io); JSON Schema emission for editors; a `manifesto diff` for drift between a live scan and a committed contract.
 
 ## License
 

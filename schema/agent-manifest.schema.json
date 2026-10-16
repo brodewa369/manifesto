@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://manifesto.dev/schema/agent-manifest.schema.json",
+  "title": "agent.manifest.yaml",
+  "description": "Portable AI agent job contract (RFC-0001). Structural rules only; semantic rules (registry, bounds, shadowing) live in manifesto's linter.",
+  "type": "object",
+  "required": ["agent"],
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "x-required-code": "missing_agent",
+      "x-violation-code": "bad_type"
+    },
+    "version": { "type": ["integer", "string"] },
+    "owner": { "type": "string" },
+    "description": { "type": "string" },
+    "ttl": {
+      "type": "string",
+      "x-required-code": "missing_required"
+    },
+    "grants": { "$ref": "#/definitions/grantsMap" },
+    "deny": { "type": "array", "items": { "type": "string" } },
+    "delegations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/delegation" }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "receipt_of": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "meta": { "type": "object" }
+  },
+  "definitions": {
+    "grantsMap": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+        "x-violation-code": "ungroupable_verb"
+      },
+      "additionalProperties": { "$ref": "#/definitions/grantValue" }
+    },
+    "grantValue": {
+      "type": ["boolean", "object"],
+      "properties": {
+        "amount": { "$ref": "#/definitions/amount" },
+        "rate": { "$ref": "#/definitions/rate" },
+        "to_domains": { "type": "array", "items": { "type": "string" } },
+        "approval": {
+          "type": "string",
+          "enum": ["required", "readonly-allowed"],
+          "x-violation-code": "bad_approval"
+        }
+      }
+    },
+    "amount": {
+      "type": "object",
+      "properties": {
+        "max": { "type": "number" },
+        "currency": { "type": "string" },
+        "window": { "type": "string" }
+      }
+    },
+    "rate": {
+      "type": "object",
+      "properties": {
+        "max": { "type": "number" },
+        "window": { "type": "string" }
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "required": ["from", "to", "narrower_than", "purpose"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "x-required-code": "delegation_missing_purpose"
+        },
+        "narrower_than": { "$ref": "#/definitions/grantsMap" },
+        "ttl": { "type": "string" }
+      }
+    }
+  }
+}

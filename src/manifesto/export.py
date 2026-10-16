@@ -38,6 +38,15 @@ def _sorted_deny(manifest):
     return sorted(str(d) for d in deny)
 
 
+def _sorted_delegations(manifest):
+    """Deterministically ordered delegations (by from, then to)."""
+    dels = manifest.get("delegations")
+    if not isinstance(dels, list):
+        return []
+    return sorted((d for d in dels if isinstance(d, dict)),
+                  key=lambda d: (str(d.get("from", "")), str(d.get("to", ""))))
+
+
 def _constraints_yaml(value, indent):
     """Render a grant's constraint object as deterministic YAML lines."""
     lines = []
@@ -105,6 +114,17 @@ def export_agentward(manifest, version=__version__) -> str:
     for key in _sorted_deny(manifest):
         out.append("    - effect: Deny")
         out.append(f"      actions: [{key}]")
+    delegations = _sorted_delegations(manifest)
+    if delegations:
+        out.append("  delegations:")
+        for d in delegations:
+            out.append(f"    - from: {d.get('from')}")
+            out.append(f"      to: {d.get('to')}")
+            out.append(f"      purpose: {d.get('purpose')}")
+            if d.get("ttl") is not None:
+                out.append(f"      expiresAt: \"{d['ttl']}\"")
+            child = d.get("narrower_than") if isinstance(d.get("narrower_than"), dict) else {}
+            out.append(f"      narrowedActions: [{', '.join(sorted(child))}]")
     out.append("")
     return "\n".join(out)
 
@@ -121,6 +141,13 @@ def export_denylist(manifest, version=__version__) -> str:
         "denyAllExceptGranted": True,
         "deny": _sorted_deny(manifest),
         "grants": sorted(_sorted_grants(manifest), key=lambda kv: kv[0]),
+        "delegations": [
+            {"from": d.get("from"), "to": d.get("to"), "purpose": d.get("purpose"),
+             "narrower_than": d.get("narrower_than")
+                              if isinstance(d.get("narrower_than"), dict) else {},
+             **({"ttl": d["ttl"]} if d.get("ttl") is not None else {})}
+            for d in _sorted_delegations(manifest)
+        ],
     }
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
