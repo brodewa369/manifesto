@@ -1,0 +1,4 @@
+# Synthetic crontab fixture (SYNTHETIC — not a real machine).
+# Read by `manifesto scan --home fixtures/home`.
+*/30 * * * * /srv/vault-indexer/index.sh
+0 9 * * 1 /srv/reports/weekly.sh

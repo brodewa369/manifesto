@@ -1,0 +1,23 @@
+# personal-assistant — read-mostly helper for one person's inbox and calendar.
+agent: personal-assistant
+version: 1
+owner: solo
+description: Reads mail and schedules; never spends, never deletes.
+ttl: 2027-03-31
+
+grants:
+  gmail.read: true
+  gmail.search: true
+  calendar.read: true
+  calendar.list: true
+  contacts.read: true
+  http.get: true
+
+deny:
+  - gmail.send
+  - gmail.delete
+  - payments.charge
+  - shell.exec
+
+meta:
+  device: laptop

@@ -1,0 +1,27 @@
+# coding-agent — reads code, writes code, runs tests behind an approval gate.
+agent: coding-agent
+version: 1
+owner: platform-team
+description: Autonomous refactoring agent with a shell-exec approval gate.
+ttl: 2027-12-31
+
+grants:
+  fs.read: true
+  fs.write:
+    to_domains: [example.internal]
+  github.read: true
+  github.write: true
+  http.get: true
+  shell.exec:
+    approval: required
+    rate:
+      max: 20
+      window: PT1H
+
+deny:
+  - payments.charge
+  - gmail.send
+  - fs.delete
+
+meta:
+  repo: example.internal/platform

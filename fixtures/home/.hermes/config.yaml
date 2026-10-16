@@ -1,0 +1,23 @@
+# Hermes Agent config (SYNTHETIC fixture — not a real machine).
+# Used only to exercise `manifesto scan --home fixtures/home`.
+mcp_servers:
+  filesystem:
+    command: python3
+    args: ["-m", "mcp_filesystem"]
+    env:
+      FS_ROOT: /srv/sandbox
+  github:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: "REDACTED-SYNTHETIC-TOKEN"
+  semantic-vault:
+    command: python3
+    args: ["mcp_server/entry.py"]
+    env:
+      VAULT_ROOT: /srv/vault
+  broken-shell:
+    command: bash
+    args: ["-lc", "mcp-shell"]
+    env:
+      SHELL_API_KEY: "REDACTED-SYNTHETIC-KEY"

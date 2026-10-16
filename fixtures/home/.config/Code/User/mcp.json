@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "slack": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "REDACTED-SYNTHETIC-TOKEN"
+      }
+    }
+  }
+}

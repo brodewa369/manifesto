@@ -1,0 +1,33 @@
+# sales-ops-bot — a bounded revenue agent.
+# A valid contract: everything it may do is spelled out and capped.
+agent: sales-ops-bot
+version: 1
+owner: revenue-team
+description: Drafts outreach and charges customers, strictly capped per day.
+ttl: 2027-06-30
+
+grants:
+  gmail.read: true
+  gmail.send: true
+  gmail.draft: true
+  calendar.read: true
+  calendar.create: true
+  payments.charge:
+    amount:
+      max: 500
+      currency: USD
+      window: P1D
+    approval: readonly-allowed
+
+deny:
+  - payments.payout
+  - shell.exec
+  - fs.delete
+
+audit:
+  receipt_of:
+    - payments.charge
+
+meta:
+  team: revenue
+  runbook: https://example.internal/runbooks/sales-ops-bot
