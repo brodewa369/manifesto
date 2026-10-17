@@ -1,0 +1,29 @@
+# fixtures/diff/before.yaml — the BASELINE contract for `manifesto diff`.
+# Synthetic test data; paired with after-tightened.yaml / after-loosened.yaml
+# and exercised by tests/test_diff.py plus the README diff demo.
+agent: sales-ops-bot
+version: 1
+owner: revenue-team
+description: "Baseline contract - capped charges, rate-limited mail, no shell."
+ttl: 2027-06-30
+
+grants:
+  gmail.read: true
+  gmail.send:
+    rate:
+      max: 20
+      window: P1D
+  payments.charge:
+    amount:
+      max: 500
+      currency: USD
+      window: P1D
+    approval: readonly-allowed
+
+deny:
+  - payments.payout
+  - shell.exec
+
+audit:
+  receipt_of:
+    - payments.charge

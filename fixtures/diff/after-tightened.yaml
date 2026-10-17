@@ -1,0 +1,30 @@
+# fixtures/diff/after-tightened.yaml — the SAFE case.
+# vs before.yaml this contract lowers the payments cap, tightens approval,
+# slows the mail rate limit, drops a read grant, refuses fs.delete, and moves
+# the expiry earlier. `manifesto diff before after --strict` exits 0.
+agent: sales-ops-bot
+version: 2
+owner: revenue-team
+description: "Same agent, less power - lower cap, stricter gate, shorter ttl."
+ttl: 2026-12-31
+
+grants:
+  gmail.send:
+    rate:
+      max: 10
+      window: P1D
+  payments.charge:
+    amount:
+      max: 250
+      currency: USD
+      window: P1D
+    approval: required
+
+deny:
+  - payments.payout
+  - fs.delete
+  - shell.exec
+
+audit:
+  receipt_of:
+    - payments.charge

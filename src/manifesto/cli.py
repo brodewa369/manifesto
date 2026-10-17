@@ -1,8 +1,9 @@
-"""CLI: ``manifesto validate|scan|explain|export``
+"""CLI: ``manifesto validate|scan|explain|export|diff``
 
 Exit codes (cron/CI friendly):
     0 = clean / valid
-    1 = findings (errors; warnings only under --strict)
+    1 = findings (errors; warnings only under --strict); a gated loosening
+        under ``diff --strict`` (unless ``--allow-loosening``)
     2 = usage error or unreadable manifest
 """
 from __future__ import annotations
@@ -13,6 +14,8 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .diff import (as_json as diff_json, diff_files, gate_hits,
+                   render as diff_render)
 from .export import TARGETS, export as export_fn
 from .explain import explain as explain_fn
 from .scan import CLIENT_CONFIGS, render as scan_render, scan as scan_fn
@@ -98,6 +101,33 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_diff(args) -> int:
+    try:
+        changes = diff_files(args.old, args.new)
+    except ManifestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    hits = gate_hits(changes)
+    old_label, new_label = str(args.old), str(args.new)
+
+    if args.json:
+        print(diff_json(old_label, new_label, changes,
+                        allow_loosening=args.allow_loosening))
+    else:
+        print(diff_render(old_label, new_label, changes))
+
+    if hits and args.strict:
+        if args.allow_loosening:
+            if not args.json:
+                print(f"gate: {len(hits)} loosening(s) accepted via --allow-loosening")
+            return 0
+        if not args.json:
+            print("!! GATE (--strict): gated loosening -> exit 1 "
+                  "(re-run with --allow-loosening to accept it)")
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="manifesto",
@@ -129,6 +159,17 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--target", choices=TARGETS, default="agentward")
     x.add_argument("-o", "--output", type=Path, default=None)
     x.set_defaults(func=cmd_export)
+
+    d = sub.add_parser("diff", help="compare two contracts; gate loosening")
+    d.add_argument("old", type=Path, help="baseline contract (e.g. main)")
+    d.add_argument("new", type=Path, help="candidate contract (e.g. this PR)")
+    d.add_argument("--json", action="store_true", help="machine-readable report")
+    d.add_argument("--strict", action="store_true",
+                   help="exit 1 on a gated loosening (payments/fs/shell or "
+                        "previously-denied areas)")
+    d.add_argument("--allow-loosening", action="store_true",
+                   help="explicitly accept the gated loosening (exit 0)")
+    d.set_defaults(func=cmd_diff)
 
     return p
 

@@ -255,7 +255,78 @@ forbid(
 // audit.receipt_of: payments.charge (APPROXIMATION: Cedar has no receipt primitive — ...)
 ```
 
-## 6. Changelog
+## 6. Contract diff — `manifesto diff`
+
+> *"This PR raises the payments cap from $500 to $1000."* A contract that only
+> ever grows is a governance bug you find out about in an incident, not in
+> review. `manifesto diff` turns that into a reviewable table with an exit code.
+
+```bash
+manifesto diff <old.yaml> <new.yaml> [--json] [--strict] [--allow-loosening]
+```
+
+Typical use — gating an agent's job contract in CI or in a PR:
+
+```bash
+manifesto diff main/agent.manifest.yaml pr/agent.manifest.yaml --strict
+```
+
+### 6.1 What is reported
+
+Every change is a row: **area**, **change**, **detail**, plus a **direction**.
+
+| Area group | Areas | Change kinds |
+|------------|-------|--------------|
+| `grant` | each grant key | `grant added`, `grant removed`, `grant changed` |
+| `deny` | `deny:<entry>` | `deny added`, `deny removed` |
+| `expiry` | `ttl` | `expiry added`, `expiry removed`, `expiry changed` |
+| `delegation` | `delegations:<from>-><to>` | `delegation added`, `delegation removed`, `delegation changed` |
+| `audit` | `audit.receipt_of:<key>` | `receipt added`, `receipt dropped` |
+
+**Direction** — how power moved:
+
+| Direction | Examples |
+|-----------|----------|
+| **tightened** | `amount.max` lowered, `rate.max` lowered, `to_domains` narrowed, an approval gate added or made stricter (`required` ⊒ `readonly-allowed`), constraints added over a bare `true`, a grant/delegation/receipt dropped, a `deny:` entry added, expiry moved earlier. |
+| **loosened** | `amount.max` raised, `rate.max` raised, `to_domains` widened, an approval gate dropped or weakened, constraints dropped (now unbounded), a grant/delegation added, a `deny:` entry removed, a receipt requirement dropped, expiry moved later or removed. |
+| **neutral** | reported, direction unknown — e.g. a `currency`/`window` change (a shorter amount *window* can mean a larger allowance per day, so direction depends on the enforcer's period semantics), a mixed target re-set. |
+
+Ties produce **no row**: two manifests with the same caps, domains, gates,
+delegations and expiry diff to *no changes*. Where a single grant moves both
+ways (rate lowered, cap raised) the row is **loosened** — worst case wins.
+
+The summary line counts grants added/removed/tightened/loosened, deny changes,
+expiry changes, delegation changes and audit changes. Output is deterministic:
+the same pair of files always renders the same bytes, and `--json` emits the
+same report as `changes[]` + `summary` + `gate`.
+
+### 6.2 The loosening gate
+
+A change is **gated** when it is classified **loosened** *and* it touches
+
+- a **sensitive class** — `payments`, `fs` (and its `files` alias), `shell`; or
+- a **previously explicitly-denied** key or namespace (anything listed in the
+  baseline's `deny:` — including a grant of a key that deny covered).
+
+`--strict` turns a gated loosening into **exit 1**; `--allow-loosening`
+explicitly accepts it (**exit 0**) after the reviewer has looked at the table.
+Everything is still printed in both cases — the gate changes the exit code, not
+the report.
+
+Loosening *outside* those areas (raising a `gmail.send` rate, say) is reported
+but does not fail `--strict`; it is not an area the gate claims to own. Run
+`diff` without `--strict` to review without gating.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | no gated loosening (or `--allow-loosening` was passed) |
+| `1` | gated loosening under `--strict` |
+| `2` | usage error or unreadable manifest |
+
+manifesto does **not** rewrite or merge manifests — it only reports. Deciding
+whether a loosening is intended stays a human act.
+
+## 7. Changelog
 
 ### 0.2.0 — 2026-10-17
 - **Formal machine-readable schema** published at

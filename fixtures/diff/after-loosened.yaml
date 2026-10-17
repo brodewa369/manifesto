@@ -1,0 +1,31 @@
+# fixtures/diff/after-loosened.yaml — the GATE case.
+# vs before.yaml this contract raises the payments cap, grants the previously
+# denied shell.exec, drops the shell deny entry, relaxes the mail rate limit,
+# and pushes the expiry out. `manifesto diff before after --strict` exits 1.
+agent: sales-ops-bot
+version: 2
+owner: revenue-team
+description: "Same agent, more power - cap raised, shell unlocked, ttl pushed out."
+ttl: 2028-06-30
+
+grants:
+  gmail.read: true
+  gmail.send:
+    rate:
+      max: 500
+      window: P1D
+  payments.charge:
+    amount:
+      max: 1000
+      currency: USD
+      window: P1D
+    approval: readonly-allowed
+  shell.exec:
+    approval: required
+
+deny:
+  - payments.payout
+
+audit:
+  receipt_of:
+    - payments.charge

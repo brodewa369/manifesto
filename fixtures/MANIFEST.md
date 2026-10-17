@@ -21,6 +21,14 @@ suite (`tests/test_export_golden.py`) compares the live exporter output to
 these files byte-for-byte, so any change to an emitter surfaces as a reviewable
 diff. Regenerate deliberately with `MANIFESTO_REGOLDEN=1`, then review.
 
+## diff/ — paired contracts for `manifesto diff`
+
+`diff/before.yaml` is a baseline contract; `diff/after-tightened.yaml` and
+`diff/after-loosened.yaml` are two candidate revisions of it. They exercise the
+classifier and the `--strict` loosening gate from both sides (tightening passes,
+loosening exits 1) and back the README demo. All three also validate clean, so
+a diff is never run over a broken input.
+
 ### APPROXIMATION — read this before trusting a golden file
 
 Every golden file, and every live export, is an **APPROXIMATION**, not a
