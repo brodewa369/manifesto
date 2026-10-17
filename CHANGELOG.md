@@ -3,6 +3,73 @@
 All notable changes to manifesto. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-10-17
+
+Enrichment release: a real-time decision function, a drift/phantom fleet
+doctor, and multi-agent directory handling — so the contract has teeth at
+action time, not just at lint time.
+
+### Added
+- **`manifesto check` (pre-action gate)** — a pure, deterministic decision
+  function that answers **ALLOW / DENY / REQUIRES_APPROVAL** for one *proposed*
+  action (`--action payments.charge --amount 400`) against the *current*
+  manifest, citing the **exact matching clause** that decided it. This is the
+  contract's real-time semantics exposed for an integrator to embed — **no
+  runtime proxy** is introduced; `check` is the decision function a proxy would
+  call. It evaluates, in precedence order: ttl expiry (contract lapsed → all
+  denied), deny dominance (exact key or whole namespace), grant presence
+  (default-deny), `amount.max` / `rate.max` cap violations, `to_domains`
+  restrictions, approval gates (`approval: required`, and `readonly-allowed`
+  blocking a write verb), and an **org registry risk class** in
+  `require_approval` (forces approval). `--as <sub-agent>` evaluates the action
+  against a **delegation's tightened slice** — its `narrower_than` set plus its
+  own ttl — so a child is judged on what it was handed, never the parent's full
+  power (the delegated `$50` cap denies a `$100` charge even when the parent
+  holds `$500`). `--json` emits the same decision for a machine. Exit codes are
+  deliberately distinct: **`0` allow, `1` deny, `2` usage, `3` requires-
+  approval** — so a wrapper can branch on the verdict. Module:
+  `manifesto/check.py`; tests: `tests/test_check.py`.
+- **`manifesto test` (fleet doctor)** — cross-checks a manifest against
+  **reality** (the same home `scan` reads) to catch the bug class a validator
+  structurally cannot see: a self-declared contract only contains what the
+  author *remembered*. Two finding kinds, reconciled through the scanner's
+  fail-closed exact-match inference (an unknown server never becomes a guessed
+  grant): **UNDECLARED** — a tool-server present on disk whose capability is
+  absent from the manifest, reported with `<file>:<line>` provenance; and
+  **PHANTOM** — a grant claimed in the manifest with no corresponding tool
+  found (a dead contract entry). Output is a KIND/KEY/DETAIL table or `--json`.
+  `--strict` exits **1** on an UNDECLARED tool in a **sensitive class**
+  (`payments`, `fs`/`files`, `shell` — shared with the `diff` gate); by default
+  findings are reported without failing the build. Module:
+  `manifesto/doctor.py`; tests: `tests/test_doctor.py`; fixture:
+  `fixtures/drift/agent.manifest.yaml` (deliberately out of sync with
+  `fixtures/home/`).
+- **Multi-agent directories** — `manifesto validate --dir DIR` and
+  `manifesto explain --dir DIR` accept a **directory** of manifests (every
+  `*.yaml`/`*.yml`/`*.json`, sorted deterministically) in addition to a single
+  file, validate/render them together, and add the one cross-file bug a
+  single-file lint cannot see: an **agent-name collision** — two contracts
+  claiming the same `agent`. In a fleet that name is the subject an enforcer
+  matches on, so a collision means one contract silently wins; it is reported
+  as a **COLLISION error** (not a warning) and fails the batch. An unreadable
+  file in the directory is surfaced fail-closed (exit `1`), never skipped.
+  Batch exit codes: `0` all valid + no collision, `1` any error-severity
+  finding (including a collision) or a warning under `--strict`, `2` usage /
+  unreadable directory. Module: `manifesto/batch.py`; tests:
+  `tests/test_batch.py`; fixture: `fixtures/fleet/` (`billing-bot.yaml` +
+  `ops-bot.yaml` both claim `billing-bot`, `support-bot.yaml` is the clean
+  contrast).
+
+### Changed
+- `validate` and `explain` now take their manifest argument as optional
+  (`nargs="?"`) and gain `--dir DIR`; passing neither is a usage error (exit
+  `2`). Single-file behaviour is unchanged.
+- Export goldens regenerated for the 0.4.0 version string (the header comment
+  embeds the generator version); the `MANIFESTO_REGOLDEN=1` mechanism and the
+  byte-stability guarantee are unchanged.
+- Test suite grows from **160 to 218** (29 `check`, 13 `doctor`, 16 `batch`);
+  the pre-existing 160 remain green.
+
 ## [0.3.0] — 2026-10-17
 
 Enrichment release: a third interop dialect, contract review with a loosening

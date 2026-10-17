@@ -36,6 +36,9 @@ proxy — enforcement stays with the enforcer.
 - **Bounded where it matters** — money verbs (`payments.charge/refund/payout`) require `amount.max`; `shell.exec` requires `approval: required`. Unbounded grants are rejected.
 - **Delegation attenuation** — `delegations:` hand a *narrowed slice* of an agent's power to a sub-agent; the child's `narrower_than` set must be a provable subset of the parent's, `purpose` required, escalation rejected (inspired by Macaroon/Biscuit caveats). `explain` renders the attenuation chain.
 - **Fail-closed discovery scanner** — parses hermes/claude/cursor/vscode MCP configs, crontab, and git identity; emits DRAFT manifests with `<file>:<line>` provenance. Inference happens **only on an exact server-table match** — an unknown tool-server or an unparseable config yields `unknown: true`, never a guess. Findings: `type-suspect`, `credential-orphan`, `expired-ttl`, `unbounded-grant`, `no_manifest`. Fixture-testable; never touches your real configs in tests.
+- **`manifesto check`** — the **pre-action gate**: a pure, deterministic decision function that answers ALLOW / DENY / REQUIRES_APPROVAL for one *proposed* action against the *current* contract, with the **exact matching clause** that decided it. Evaluates grants, deny dominance, ttl expiry, amount/rate caps, `to_domains`, approval gates, org registry risk classes, and a **delegation's tightened slice** (`--as`). Gives the contract real-time teeth **without** a runtime proxy — embed the function or shell out (exit `0`/`1`/`3`).
+- **`manifesto test`** — the **fleet doctor**: cross-checks a manifest against reality (the same home `scan` reads) to catch the two bug classes a validator can't see — **UNDECLARED** tools (present on disk, absent from the contract, with `file:line` provenance) and **PHANTOM** grants (claimed in the contract, no tool found). `--strict` fails on an UNDECLARED tool in a sensitive class.
+- **Multi-agent directories** — `validate --dir DIR` / `explain --dir DIR` process every manifest in a folder and add the one cross-file bug a single-file lint can't see: an **agent-name collision** (two contracts claiming the same subject). A collision is an error, not a warning.
 - **Deterministic exporters** — three dialects: AgentWard-style policy YAML, a platform-neutral deny-list JSON, and a **Cedar policy set** (`permit`/`forbid` + mapping comments); same input always produces the same bytes. A golden-file suite (`fixtures/golden/`) byte-compares every dialect (labeled APPROXIMATION in [`fixtures/MANIFEST.md`](fixtures/MANIFEST.md)).
 - **`manifesto diff`** — compare two contracts and see which grants were **added / removed / tightened / loosened**, what happened to the expiry, and which delegations changed — as a human table or `--json`. `--strict` exits **1** on a loosening in a sensitive class (`payments`, `fs`, `shell`) or a previously-denied area; `--allow-loosening` accepts it explicitly. Built for "this PR removes the payments cap — flagged".
 - **Org verb-registry override** — `validate --registry our_verbs.yaml` layers your own `<system>.<verb>` vocabulary over the built-ins (`extend` or `replace`), sets the rule for unknown verbs (`error`/`warning`/`ignore`), and maps verbs to **risk classes** whose gated members must carry `approval: required` (`missing_approval`).
@@ -128,10 +131,24 @@ manifesto validate --strict --json agent.manifest.yaml
 # ...layered over your org's own verb registry (see "Org verb registry" below)
 manifesto validate agent.manifest.yaml --registry our_verbs.yaml
 
+# Validate (or explain) a WHOLE DIRECTORY of contracts + agent-name collision check
+manifesto validate --dir manifests/
+manifesto explain --dir manifests/
+
 # Read-only discovery of running tool-servers
 manifesto scan                       # scan the real home
 manifesto scan --client hermes       # one client only
 manifesto scan --home fixtures/home  # point at a fixture dir (tests use this)
+
+# Pre-action gate: is this proposed action allowed by the current contract?
+manifesto check agent.manifest.yaml --action gmail.read
+manifesto check agent.manifest.yaml --action payments.charge --amount 400
+manifesto check agent.manifest.yaml --action http.post --target example.com
+manifesto check agent.manifest.yaml --action payments.charge --amount 100 --as sales-ops
+
+# Fleet doctor: cross-check the contract against what's actually on disk
+manifesto test agent.manifest.yaml --home ~        # phantom / undeclared audit
+manifesto test agent.manifest.yaml --home ~ --strict
 
 # Plain-language summary + risk badges + delegation chains
 manifesto explain examples/coding-agent.yaml
@@ -151,9 +168,10 @@ manifesto diff before.yaml after.yaml --json
 
 | Code | Meaning |
 |---|---|
-| `0` | clean / valid (warnings allowed unless `--strict`); a `diff` with no gated loosening |
-| `1` | findings — validator errors (or warnings under `--strict`); scan "no-manifest" findings; a **gated loosening** under `diff --strict` (unless `--allow-loosening`) |
+| `0` | clean / valid (warnings allowed unless `--strict`); a `diff` with no gated loosening; a `check` verdict **ALLOW** |
+| `1` | findings — validator errors (or warnings under `--strict`); scan "no-manifest" findings; a **gated loosening** under `diff --strict`; an agent-name **collision** under `validate --dir`; a `check` verdict **DENY** |
 | `2` | usage error, unreadable manifest, or unreadable/unparseable `--registry` file |
+| `3` | `check` verdict **REQUIRES_APPROVAL** — proceed only with a human sign-off |
 
 ## Cedar export
 
@@ -245,6 +263,139 @@ not in a sensitive class, so it does not trip the gate by itself — the gate
 owns `payments`, `fs` (and `files`) and `shell`, plus anything the baseline
 explicitly denied. Full rules: [SPEC.md §6](SPEC.md).
 
+## Pre-action gate — `manifesto check`
+
+`diff` reviews a change *before it ships*. `check` decides a *proposed action*
+*right now*, against the current contract — the pure decision function an
+integrator embeds to give the manifest real-time teeth **without** running a
+runtime proxy. It answers **ALLOW / DENY / REQUIRES_APPROVAL**, names the
+reason, and cites the **exact matching clause** that decided it.
+
+It evaluates, in precedence order: ttl expiry, deny dominance, grant presence
+(default-deny), `amount`/`rate` caps, `to_domains`, approval gates, and org
+registry risk classes. Recorded output — an allowed read, a cap violation, and
+a gated shell action:
+
+```text
+$ manifesto check examples/sales-ops-bot.yaml --action gmail.read
+== manifesto check | examples/sales-ops-bot.yaml
+   agent:  sales-ops-bot
+   action: gmail.read
+   => ALLOW
+   reason: 'gmail.read' is granted within its stated bounds
+   clause: grants.gmail.read = true
+$ echo $?
+0
+
+$ manifesto check examples/sales-ops-bot.yaml --action payments.charge --amount 900
+== manifesto check | examples/sales-ops-bot.yaml
+   agent:  sales-ops-bot
+   action: payments.charge
+   => DENY
+   reason: amount 900.0 exceeds the cap of 500
+   clause: grants.payments.charge.amount.max = 500
+$ echo $?
+1
+
+$ manifesto check examples/delegating-lead.yaml --action shell.exec
+== manifesto check | examples/delegating-lead.yaml
+   agent:  sales-lead
+   action: shell.exec
+   => REQUIRES_APPROVAL
+   reason: 'shell.exec' is gated by approval: required
+   clause: grants.shell.exec.approval = required
+$ echo $?
+3
+```
+
+**Delegation tightened slice.** `--as <sub-agent>` judges the action on what
+the child was *actually handed* (`narrower_than`), never on the parent's full
+power. The parent `sales-lead` may charge up to $500; the delegated `sales-ops`
+only $50 — so a $100 charge as `sales-ops` is denied against the child's cap:
+
+```text
+$ manifesto check examples/delegating-lead.yaml --action payments.charge --amount 100 --as sales-ops
+== manifesto check | examples/delegating-lead.yaml
+   agent:  sales-ops
+   action: payments.charge
+   => DENY
+   reason: amount 100.0 exceeds the cap of 50
+   clause: delegations[0].narrower_than.payments.charge.amount.max = 50
+$ echo $?
+1
+```
+
+`--json` emits the same decision for a machine, and `--registry` layers an org
+risk-class gate (a gated class forces `REQUIRES_APPROVAL`). Exit codes are
+deliberately distinct: `0` allow, `1` deny, `2` usage, `3` requires-approval —
+so a wrapper can branch on the verdict.
+
+## Drift & phantom audits — `manifesto test`
+
+A self-declared contract only contains what its author *remembered*.
+`manifesto test` cross-checks it against **reality** (the same home `scan`
+reads) and surfaces the two bug classes a validator structurally *cannot* see,
+because they are drift, not shape:
+
+- **UNDECLARED** — a tool-server is present on disk but its capability is
+  absent from the manifest (the agent can do something the contract forgot),
+  reported with `<file>:<line>` provenance.
+- **PHANTOM** — the manifest claims a grant but no corresponding tool was
+  found (a dead contract entry — authority naming nothing real).
+
+Inference is the scanner's **fail-closed** exact-match table, so an unknown
+server never becomes a guessed grant. Recorded output against the drift
+fixture:
+
+```text
+$ manifesto test fixtures/drift/agent.manifest.yaml --home fixtures/home
+== manifesto test | agent=drift-bot | home=fixtures/home
+   declared grants: 4 | tools on disk: 7
+   KIND      KEY            DETAIL
+   PHANTOM   calendar.read  manifest grants 'calendar.read' but no 'calendar' tool-server was found under the scanned home (dead contract entry)
+   PHANTOM   gmail.send     manifest grants 'gmail.send' but no 'gmail' tool-server was found under the scanned home (dead contract entry)
+   UNDECLARED broken-shell   hermes/broken-shell -> shell present on disk but 'shell.*' is absent from the declared manifest  [fixtures/home/.hermes/config.yaml:19]
+   UNDECLARED context7       claude/context7 -> http present on disk but 'http.*' is absent from the declared manifest  [fixtures/home/.claude/claude_desktop_config.json:3]
+   UNDECLARED slack          vscode/slack -> slack present on disk but 'slack.*' is absent from the declared manifest  [fixtures/home/.config/Code/User/mcp.json:3]
+   UNDECLARED stripe         cursor/stripe -> payments present on disk but 'payments.*' is absent from the declared manifest  [fixtures/home/.cursor/mcp.json:3]
+== 4 undeclared tool(s), 2 phantom grant(s); 6 finding(s) total
+!! --strict: 2 UNDECLARED tool(s) in a sensitive class (payments/fs/shell) -> exit 1
+$ echo $?
+0
+```
+
+By default findings are reported but do not fail the build. `--strict` exits
+**1** — and an UNDECLARED tool in a **sensitive class** (`payments`, `fs`,
+`shell`) is the dangerous direction (real capability the contract forgot), so
+it is the one that always trips `--strict`. `--json` emits the machine report.
+
+## Multi-agent directories — `validate --dir`
+
+A fleet is a *directory* of contracts. `--dir` validates (or `explain`s) every
+`*.yaml`/`*.yml`/`*.json` in a folder and adds the one bug that is invisible to
+any single-file lint: a **cross-file agent-name collision** — two contracts
+claiming the same `agent`. In a fleet that name is the subject an enforcer
+matches on, so a collision means one contract silently wins; it is an **error**,
+not a warning. Recorded output against the fleet fixture (two files both claim
+`billing-bot`):
+
+```text
+$ manifesto validate --dir fixtures/fleet
+== manifesto validate --dir | fixtures/fleet
+-- fixtures/fleet/billing-bot.yaml  [billing-bot]  ok
+-- fixtures/fleet/ops-bot.yaml  [billing-bot]  ok
+-- fixtures/fleet/support-bot.yaml  [support-bot]  ok
+== agent-name collisions
+   COLLISION  agent 'billing-bot' claimed by: fixtures/fleet/billing-bot.yaml, fixtures/fleet/ops-bot.yaml
+== 3 file(s): 3 valid, 0 invalid; 1 collision(s); 1 error(s), 0 warning(s)
+$ echo $?
+1
+```
+
+An unreadable file inside the directory is surfaced as a fail-closed error
+(exit `1`) rather than skipped, and `manifesto explain --dir DIR` renders every
+contract in the folder. Full rules: [SPEC.md §8](SPEC.md).
+
 ## Org verb registry — `validate --registry`
 
 The built-in verb registry is generic data. An org can layer its own
@@ -315,7 +466,7 @@ file you explicitly name with `-o`.
 
 ## Testing
 
-Zero third-party deps — plain `unittest` (160 tests):
+Zero third-party deps — plain `unittest` (218 tests):
 
 ```bash
 python -m unittest discover -s tests -t .
@@ -337,12 +488,23 @@ determinism) and `tests/test_registry.py` (extend/replace modes, the three
 `unknown_verb` rules, the risk-class approval rule, strict parsing of a
 malformed authority file, CLI exit codes).
 
+Added in 0.4.0: `tests/test_check.py` (the pre-action gate — ALLOW / DENY /
+REQUIRES_APPROVAL verdicts, expiry, deny dominance, caps, `to_domains`,
+approval gates, registry risk-classes, the delegation tightened slice, CLI
+exit codes `0/1/2/3`, determinism), `tests/test_doctor.py` (phantom/undeclared
+reconciliation with `file:line` provenance, fail-closed skip of unknown
+servers, sensitive-class `--strict` gate, CLI exit codes), and
+`tests/test_batch.py` (`--dir` loading, cross-file agent-name collision
+detection, fail-closed unreadable file, batch exit codes, JSON, determinism).
+
 `examples/` holds four runnable contracts — `sales-ops-bot.yaml`,
 `coding-agent.yaml`, `personal-assistant.yaml`, and `delegating-lead.yaml`
 (a valid delegation) — all validated in the test suite. `fixtures/diff/` holds
-the baseline/tightened/loosened trio behind the `diff` demo, and
-`fixtures/registry/` the org registry behind the `--registry` demo; both are
-documented in [`fixtures/MANIFEST.md`](fixtures/MANIFEST.md).
+the baseline/tightened/loosened trio behind the `diff` demo, `fixtures/registry/`
+the org registry behind the `--registry` demo, `fixtures/drift/` the
+out-of-sync contract behind the `test` doctor demo, and `fixtures/fleet/` the
+colliding pair behind the `--dir` demo; all are documented in
+[`fixtures/MANIFEST.md`](fixtures/MANIFEST.md).
 
 ## Troubleshooting cookbook
 
@@ -372,11 +534,14 @@ documented in [`fixtures/MANIFEST.md`](fixtures/MANIFEST.md).
 
 - **v0.3 (shipped)** — Cedar export dialect, `manifesto diff` with the
   loosening gate, and the org verb-registry override.
-- **v0.4** — attestation & signed receipts (`audit.receipt_of` backed by
+- **v0.4 (shipped)** — `manifesto check` pre-action gate (ALLOW / DENY /
+  REQUIRES_APPROVAL with the exact matching clause), `manifesto test` fleet
+  doctor (phantom/undeclared drift audit against a scanned home), and
+  multi-agent directories (`validate --dir` / `explain --dir` with cross-file
+  agent-name collision detection).
+- **v0.5** — attestation & signed receipts (`audit.receipt_of` backed by
   verifiable receipts); manifest signing; richer interop targets (AgentBound,
   Permit.io); JSON Schema emission for editors.
-- **v0.5** — drift detection between a live `scan` draft and a committed
-  contract, reusing the diff engine.
 
 ## License
 

@@ -1,0 +1,13 @@
+# fixtures/fleet/ops-bot.yaml — DELIBERATELY claims the SAME agent name as
+# billing-bot.yaml (`billing-bot`). In a fleet the agent name is the subject
+# an enforcer matches on, so a duplicate means one contract silently wins:
+# `manifesto validate --dir fixtures/fleet` reports this as a COLLISION.
+agent: billing-bot
+version: 2
+owner: platform-team
+description: Same subject name as billing-bot.yaml, on purpose (collision).
+ttl: 2027-06-30
+
+grants:
+  fs.read: true
+  slack.read: true

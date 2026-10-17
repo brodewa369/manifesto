@@ -1,0 +1,17 @@
+# fixtures/fleet/support-bot.yaml — a distinct, valid contract (unique agent
+# name). Serves as the clean contrast case when `manifesto validate --dir
+# fixtures/fleet` runs: this file is `ok`, the other two collide on
+# agent name `billing-bot`.
+agent: support-bot
+version: 1
+owner: platform-team
+description: Reads mail and drafts replies; no money or shell power.
+ttl: 2027-06-30
+
+grants:
+  gmail.read: true
+  gmail.draft: true
+
+deny:
+  - gmail.send
+  - payments.charge

@@ -13,6 +13,8 @@ etc. are never read. Values (tokens, keys) are redacted placeholders.
 | `unknown-home/` | A second fake home with a single **unrecognized** tool-server, used to prove the scanner is **fail-closed**: unknown servers produce `unknown: true`, never a guessed grant. |
 | `diff/` | Paired contracts for `manifesto diff` (see below). |
 | `registry/` | An org verb-registry (`acme.yaml`) plus a contract written in that org's vocabulary (`acme-deploy-bot.yaml`) for `validate --registry`. |
+| `drift/` | A contract deliberately out of sync with `home/` for `manifesto test` (see below). |
+| `fleet/` | Three contracts for `validate --dir`, two of which collide on an agent name (see below). |
 | `golden/` | Byte-exact expected output for each export dialect (see below). |
 
 ## golden/ — export determinism
@@ -30,6 +32,26 @@ diff. Regenerate deliberately with `MANIFESTO_REGOLDEN=1`, then review.
 classifier and the `--strict` loosening gate from both sides (tightening passes,
 loosening exits 1) and back the README demo. All three also validate clean, so
 a diff is never run over a broken input.
+
+## drift/ — an out-of-sync contract for `manifesto test`
+
+`drift/agent.manifest.yaml` is written against `home/` but deliberately left
+**out of sync**, so the fleet doctor's two bug-classes are exercised at once:
+it declares `calendar.read` and `gmail.send` (no such tool-server exists on the
+fake home → **PHANTOM** grants) while omitting the `payments`/`shell`/`slack`/
+`http` servers that *are* present (→ **UNDECLARED** tools, two of them in a
+sensitive class, with `<file>:<line>` provenance). It backs the README's
+`manifesto test` demo and `tests/test_doctor.py`. Like every fixture, nothing
+here is a real machine.
+
+## fleet/ — multi-agent directory for `validate --dir`
+
+Three contracts for the `--dir` demo: `billing-bot.yaml` and `ops-bot.yaml`
+both declare `agent: billing-bot` — a deliberate **agent-name collision** —
+while `support-bot.yaml` declares a unique name as the clean contrast. All
+three validate individually, so the only failure the batch reports is the
+collision, which is exactly the cross-file bug a single-file lint cannot see.
+Used by the README's `validate --dir` demo and `tests/test_batch.py`.
 
 ## registry/ — org verb-registry override
 

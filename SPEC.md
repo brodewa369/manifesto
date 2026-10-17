@@ -379,7 +379,102 @@ See `fixtures/registry/acme.yaml` (the org registry) and
 `fixtures/registry/acme-deploy-bot.yaml` (a contract in the org vocabulary that
 fails without it and passes with it).
 
-## 8. Changelog
+## 8. Pre-action gate — `manifesto check`
+
+`diff` (§6) reviews a change *before it ships*; `check` decides a *proposed
+action* *right now*, against the current contract. It is the pure, deterministic
+decision function that gives a manifest real-time authority **without** a
+runtime proxy — an integrator embeds :func:`manifesto.check.check` (or shells
+out to `manifesto check`) as the gate a proxy would call.
+
+Given the loaded manifest and a proposed ``<system>.<verb>`` (plus optional
+``amount``/``rate``/``target``), it returns one of three verdicts with a reason
+and the **exact matching clause** that decided it:
+
+* **ALLOW** — the action is within a granted, unviolated, ungated scope.
+* **DENY** — the action breaks the contract.
+* **REQUIRES_APPROVAL** — the action may proceed only with a human sign-off.
+
+Decision precedence (the first decisive clause wins):
+
+1. **Expiry** — a manifest (or the selected delegation) whose ``ttl`` has
+   passed denies everything.
+2. **Deny dominance** — an explicit ``deny:`` entry (exact key or whole
+   namespace) denies before any grant is consulted.
+3. **Grant presence** — an action with no matching grant is denied (default
+   deny); the clause names the absent key.
+4. **Constraint violations** — an ``amount``/``rate`` cap or a ``to_domains``
+   restriction the action breaks denies, citing the bound. An action that
+   *omits* a value the contract would have to check (a capped verb with no
+   ``--amount``, a domain-restricted verb with no ``--target``) is
+   ``REQUIRES_APPROVAL``, not a silent allow.
+5. **Approval gates** — ``approval: required``; ``readonly-allowed`` asked to
+   perform a **write** verb (read verbs pass); an **org registry risk class**
+   in ``require_approval`` (§7).
+6. Otherwise **ALLOW**.
+
+**Delegation slice.** ``--as <sub-agent>`` evaluates the action against that
+delegation's ``narrower_than`` set (and its own ttl), so a child is judged on
+what it was actually handed — a child capped at $50 denies a $100 charge even
+when the parent holds $500.
+
+Exit codes are deliberately distinct from ``validate``: ``0`` allow, ``1`` deny,
+``2`` usage/unreadable, ``3`` requires-approval. ``--json`` emits the same
+decision for a machine. ``check`` never mutates anything.
+
+## 9. Fleet doctor — `manifesto test`
+
+A self-declared contract only contains what its author *remembered*.
+``manifesto test`` cross-checks it against **reality** — the same home
+``manifesto scan`` (§ scanner) reads — and surfaces the two drift bug-classes a
+validator structurally cannot see (they are not shape errors):
+
+* **UNDECLARED** — a tool-server is present on disk (an MCP config names it)
+  but its inferred capability is absent from the declared manifest. The agent
+  can actually do something the contract never accounted for. Reported with the
+  ``<file>:<line>`` provenance of the offending server.
+* **PHANTOM** — the manifest claims a grant but **no corresponding tool** was
+  found on disk: a dead contract entry, authority that names nothing real.
+
+Reconciliation reuses the scanner's **fail-closed** exact-match inference, so an
+unknown server never becomes a guessed grant (it is skipped, never counted as
+either direction). Sensitive classes (``payments``, ``fs``/``files``, ``shell``)
+are shared with the ``diff`` gate (§6.2); ``--strict`` exits ``1`` when an
+UNDECLARED tool lands in a sensitive class — that is the dangerous direction
+(real capability the contract forgot). By default findings are reported without
+failing the build. Output: a KIND/KEY/DETAIL table or ``--json``; deterministically
+ordered.
+
+## 10. Multi-agent directories — `validate --dir` / `explain --dir`
+
+A fleet is a *directory* of contracts. ``--dir DIR`` accepts every
+``*.yaml``/``*.yml``/``*.json`` in the directory (sorted deterministically),
+validates (or ``explain``s) them together, and adds the one bug that is invisible
+to any single-file lint: a **cross-file agent-name collision** — two contracts
+claiming the same ``agent``. In a fleet that name is the subject an enforcer
+matches on, so a collision means one of the two contracts silently wins; it is
+therefore an **error** (``COLLISION``), not a warning.
+
+An unreadable file in the directory is surfaced **fail-closed** (an
+``unreadable_manifest`` error entry) rather than skipped — a broken contract
+must never look clean. Batch exit codes: ``0`` every manifest valid and no
+collision; ``1`` any error-severity finding (including a collision), or a
+warning under ``--strict``; ``2`` usage error / unreadable directory.
+
+## 11. Changelog
+
+### 0.4.0 — 2026-10-17
+- **`manifesto check`** (§8): the pre-action gate — ALLOW / DENY /
+  REQUIRES_APPROVAL with the exact matching clause; expiry, deny dominance,
+  default-deny, caps, ``to_domains``, approval gates, registry risk classes,
+  and the delegation tightened slice (``--as``); exit codes ``0/1/2/3``.
+- **`manifesto test`** (§9): the fleet doctor — UNDECLARED (on disk, absent
+  from the contract, with ``file:line``) and PHANTOM (claimed, no tool) findings
+  via the scanner's fail-closed inference; ``--strict`` fails on an UNDECLARED
+  sensitive-class tool.
+- **Multi-agent directories** (§10): ``validate --dir`` / ``explain --dir``
+  with cross-file agent-name **collision** detection; fail-closed unreadable
+  file handling; batch exit codes.
 
 ### 0.3.0 — 2026-10-17
 - **Cedar export dialect** (`export --target cedar`, §5.1): a `permit`/`forbid`

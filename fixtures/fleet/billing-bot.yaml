@@ -1,0 +1,23 @@
+# fixtures/fleet/billing-bot.yaml — a valid contract for agent `billing-bot`.
+# Paired with ops-bot.yaml (same agent name) to exercise the cross-file
+# agent-name collision check in `manifesto validate --dir`.
+agent: billing-bot
+version: 1
+owner: platform-team
+description: Reads invoices and charges customers, capped daily.
+ttl: 2027-06-30
+
+grants:
+  fs.read: true
+  gmail.read: true
+  payments.charge:
+    amount:
+      max: 250
+      currency: USD
+      window: P1D
+
+deny:
+  - payments.payout
+
+audit:
+  receipt_of: [payments.charge]

@@ -1,0 +1,27 @@
+# fixtures/drift/agent.manifest.yaml — a contract deliberately out of sync with
+# fixtures/home/, so `manifesto test` surfaces both audit bug-classes.
+#
+# Present on disk under fixtures/home/ (exact server-table matches):
+#   fs (filesystem, semantic-vault), github, shell (broken-shell), http
+#   (context7), payments (stripe), slack.
+#
+# This contract:
+#   * declares fs.read + github.read      -> backed by real tools (clean)
+#   * declares calendar.read, gmail.send  -> NO tool on disk  => PHANTOM grants
+#   * omits payments/slack/shell          -> tools present but ABSENT here =>
+#                                            UNDECLARED tools (payments + shell
+#                                            are sensitive classes)
+#
+#   manifesto test fixtures/drift/agent.manifest.yaml --home fixtures/home
+#     -> 3 UNDECLARED (payments, shell sensitive; slack not), 2 PHANTOM
+agent: drift-bot
+version: 1
+owner: synthetic-team
+description: Fixture contract left out of sync with fixtures/home on purpose.
+ttl: 2027-12-31
+
+grants:
+  fs.read: true
+  github.read: true
+  calendar.read: true      # PHANTOM — no calendar tool-server on disk
+  gmail.send: true         # PHANTOM — no gmail tool-server on disk
