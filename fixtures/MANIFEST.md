@@ -39,6 +39,16 @@ certified vendor schema:
   enforcer that can consume a sorted list of actions plus a default-deny flag
   can adapt it. Justification: it pins the canonical, deterministic deny-list
   projection with no vendor coupling at all.
+- **cedar** — a *Cedar policy set* (`permit`/`forbid` statements + mapping
+  comments). The `//` header carries the manifest→Cedar mapping table with each
+  row marked `[APPROXIMATION]`, and the emitted statements keep action ids
+  verbatim (`Action::"<system>.<verb>"`). Bounds become `when { context.* }`
+  predicates, which Cedar does not itself enforce — the enforcer populates
+  `context`. Justification: it pins manifesto's *translation* into a widely
+  readable policy language, byte-stable so a Cedar port can be diffed against
+  its source contract. **Not vendor-certified and not validated against any
+  Cedar engine's schema** — the same warning is in the emitted header and in
+  SPEC.md §5.1.
 
 manifesto **never** calls a vendor API and **never** enforces at runtime. Read
 the emitted header/disclaimer, reconcile with your enforcer's real schema, then

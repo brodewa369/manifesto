@@ -2,14 +2,15 @@
 
 ``manifesto export --target agentward`` emits an approximate AgentWard-style
 policy YAML skeleton; ``--target denylist`` emits a platform-neutral deny-list
-JSON. Both are **deterministic** — the same manifest always produces the same
-bytes (keys sorted, no timestamps, stable ordering) so exports are diff-able
-and committable.
+JSON; ``--target cedar`` emits a Cedar policy *set* (``permit``/``forbid``
+statements plus mapping comments). All are **deterministic** — the same
+manifest always produces the same bytes (keys sorted, no timestamps, stable
+ordering) so exports are diff-able and committable.
 
 IMPORTANT: the emitted dialects are **approximations**, not certified schemas
-of any vendor. They are reviewable starting points — read the header comment,
-adjust to your enforcer's real schema, then enforce. manifesto never talks to
-a vendor API.
+of any vendor (Cedar included). They are reviewable starting points — read the
+header comment, adjust to your enforcer's real schema, then enforce. manifesto
+never talks to a vendor API.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import json
 
 from . import __version__
 
-TARGETS = ("agentward", "denylist")
+TARGETS = ("agentward", "denylist", "cedar")
 
 _DISCLAIMER_COMMON = (
     "dialects are approximations, not certified vendor schemas — review before enforcing"
@@ -152,9 +153,181 @@ def export_denylist(manifest, version=__version__) -> str:
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+# --------------------------------------------------------------------------- #
+# Cedar policy set (third dialect)
+# --------------------------------------------------------------------------- #
+
+#: Header comment block: the manifest -> Cedar mapping table, verbatim in the
+#: output so an auditor reading a golden file sees what was approximated.
+#: The prose version (with fidelity notes) lives in SPEC.md, Interop.
+_CEDAR_MAPPING = (
+    "// mapping (manifesto -> Cedar; full table in SPEC.md, Interop):",
+    "//   agent                  -> principal == Agent::\"<agent>\"       [APPROXIMATION: no schema/entity store emitted]",
+    "//   grants.<system>.<verb> -> action == Action::\"<key>\"           [action ids preserved verbatim]",
+    "//   grant value `true`     -> bare permit(...) with no condition  [exact]",
+    "//   amount/rate/to_domains/approval -> when { context.* }         [APPROXIMATION: enforcer supplies the request context]",
+    "//   deny: <key>            -> forbid(...)                         [Cedar forbid always wins; manifesto's deny dominates too]",
+    "//   delegations            -> extra permit(...) for the sub-agent [APPROXIMATION: no principal-hierarchy/transfer emitted]",
+    "//   ttl                    -> comment only                        [APPROXIMATION: contract expiry enforced outside Cedar]",
+    "//   default deny           -> Cedar implicit deny                 [native Cedar behaviour, no statement emitted]",
+)
+
+_CEDAR_APPROVAL_NOTE = (
+    "// Cedar policy overrides below are APPROXIMATIONS: byte-stable (golden-tested)"
+    " and semantics reviewed manually — NOT vendor-certified."
+)
+
+
+def _cedar_str(value) -> str:
+    """Escape a value for a Cedar string literal (double-quoted)."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _cedar_num(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _comment(value) -> str:
+    """Collapse a free-form string to a single comment-safe line."""
+    return " ".join(str(value).split())
+
+
+def _cedar_conditions(value) -> list:
+    """Approximate a grant's constraint object as Cedar ``when`` predicates.
+
+    APPROXIMATION: Cedar has no money/rate-window primitive, so every bound
+    becomes a ``context.*`` predicate the enforcer must populate. Documented
+    per-key in SPEC.md, Interop.
+    """
+    conds = []
+    if not isinstance(value, dict):
+        return conds
+    amt = value.get("amount")
+    if isinstance(amt, dict):
+        if isinstance(amt.get("max"), (int, float)) and not isinstance(amt.get("max"), bool):
+            conds.append(f"context.amount_max == {_cedar_num(amt['max'])}")
+        if amt.get("currency") is not None:
+            conds.append(f"context.amount_currency == \"{_cedar_str(amt['currency'])}\"")
+        if amt.get("window") is not None:
+            conds.append(f"context.amount_window == \"{_cedar_str(amt['window'])}\"")
+    rate = value.get("rate")
+    if isinstance(rate, dict):
+        if isinstance(rate.get("max"), (int, float)) and not isinstance(rate.get("max"), bool):
+            conds.append(f"context.rate_max == {_cedar_num(rate['max'])}")
+        if rate.get("window") is not None:
+            conds.append(f"context.rate_window == \"{_cedar_str(rate['window'])}\"")
+    doms = value.get("to_domains")
+    if isinstance(doms, list) and doms:
+        domains = sorted(str(x) for x in doms)
+        one = " || ".join(f"context.to_domain == \"{_cedar_str(x)}\"" for x in domains)
+        conds.append(f"({one})" if len(domains) > 1 else one)
+    appr = value.get("approval")
+    if appr is not None:
+        conds.append(f"context.approval == \"{_cedar_str(appr)}\"")
+    return conds
+
+
+def _cedar_policy(effect, principal, action_key, conds) -> list:
+    """One ``permit``/``forbid`` statement as deterministic Cedar lines."""
+    lines = [
+        f"{effect}(",
+        f"  principal == Agent::\"{_cedar_str(principal)}\",",
+        f"  action == Action::\"{_cedar_str(action_key)}\",",
+        "  resource",
+    ]
+    if conds:
+        lines.append(")")
+        lines.append("when {")
+        for i, cond in enumerate(conds):
+            lines.append(("  " if i == 0 else "  && ") + cond)
+        lines.append("};")
+    else:
+        lines.append(");")
+    return lines
+
+
+def export_cedar(manifest, version=__version__) -> str:
+    """Approximate Cedar policy set (deterministic, comment-annotated).
+
+    Emitted statements: ``permit`` per grant, ``forbid`` per ``deny`` entry,
+    and one extra ``permit`` per delegated child grant. Everything else
+    (mapping, ttl, audit) is carried as comments so the file stays a
+    reviewable, byte-stable artefact.
+    """
+    agent = manifest.get("agent", "unnamed-agent")
+    out = ["// manifesto export -> cedar (APPROXIMATION)",
+           f"// generated by manifesto {version} | {_DISCLAIMER_COMMON}",
+           "//"]
+    header = f"// contract: {agent}"
+    if manifest.get("version") is not None:
+        header += f" | version: {manifest['version']}"
+    if manifest.get("owner") is not None:
+        header += f" | owner: {_comment(manifest['owner'])}"
+    out.append(header)
+    if manifest.get("description"):
+        out.append(f"// description: {_comment(manifest['description'])}")
+    ttl = manifest.get("ttl")
+    if ttl is not None:
+        out.append(f"// ttl: {ttl} (APPROXIMATION: expiry is a comment only — "
+                   "enforce contract expiry outside Cedar)")
+    else:
+        out.append("// ttl: (none) — grants never lapse; flagged by `manifesto validate`")
+    out.append("//")
+    out.extend(_CEDAR_MAPPING)
+    out.append(_CEDAR_APPROVAL_NOTE)
+    out.append("//")
+    out.append("// default: no matching permit -> request not applicable -> implicit deny")
+
+    out.append("")
+    for key, value in _sorted_grants(manifest):
+        out.extend(_cedar_policy("permit", agent, key, _cedar_conditions(value)))
+
+    for key in _sorted_deny(manifest):
+        # forbid, not deny: in Cedar a matching forbid always wins, which is
+        # exactly manifesto's "deny dominates" (shadowed_grant) semantics.
+        if "." not in key:
+            out.append(f"// deny: {key} (whole system) — APPROXIMATION: Cedar has no "
+                       f"action id for a namespace; enumerate {key}.* as forbid(...) instead")
+            continue  # namespace-level deny (e.g. `fs`) has no Cedar action id
+        out.extend(_cedar_policy("forbid", agent, key, []))
+
+    delegations = _sorted_delegations(manifest)
+    for d in delegations:
+        child = d.get("narrower_than") if isinstance(d.get("narrower_than"), dict) else {}
+        out.append("")
+        note = f"// delegation: {d.get('from')} -> {d.get('to')}"
+        if d.get("purpose"):
+            note += f" (purpose: {_comment(d['purpose'])})"
+        if d.get("ttl") is not None:
+            note += f" (ttl: {d['ttl']})"
+        out.append(note)
+        out.append("// APPROXIMATION: emitted as an extra permit for the sub-agent;")
+        out.append("// no Cedar principal hierarchy or attenuated-transfer is modelled.")
+        for key in sorted(child):
+            out.extend(_cedar_policy("permit", d.get("to"), key,
+                                     _cedar_conditions(child[key])))
+
+    receipts = manifest.get("audit")
+    if isinstance(receipts, dict) and isinstance(receipts.get("receipt_of"), list) \
+            and receipts["receipt_of"]:
+        keys = ", ".join(sorted(str(r) for r in receipts["receipt_of"]))
+        out.append("")
+        out.append(f"// audit.receipt_of: {keys} (APPROXIMATION: Cedar has no receipt "
+                   "primitive — receipts are an out-of-band contract obligation)")
+
+    out.append("")
+    return "\n".join(out)
+
+
 def export(manifest, target, version=__version__) -> str:
     if target == "agentward":
         return export_agentward(manifest, version)
     if target == "denylist":
         return export_denylist(manifest, version)
+    if target == "cedar":
+        return export_cedar(manifest, version)
     raise ValueError(f"unknown export target {target!r}; choose from {', '.join(TARGETS)}")

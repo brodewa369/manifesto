@@ -9,7 +9,7 @@
   ],
   "denyAllExceptGranted": true,
   "disclaimer": "dialects are approximations, not certified vendor schemas — review before enforcing",
-  "generator": "manifesto 0.2.0",
+  "generator": "manifesto 0.3.0",
   "grants": [
     [
       "fs.read",

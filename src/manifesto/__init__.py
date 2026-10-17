@@ -14,4 +14,4 @@ running on a machine, and exports an approximate policy for a target enforcer.
 Zero runtime dependencies — pure Python standard library.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

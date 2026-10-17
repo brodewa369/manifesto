@@ -1,4 +1,4 @@
-"""Golden-file determinism for both export dialects.
+"""Golden-file determinism for every export dialect.
 
 For every example manifest and every export target there is a committed
 ``fixtures/golden/<name>.<target>.expected`` file. The exporter's live output
@@ -54,10 +54,16 @@ class ExportGolden(unittest.TestCase):
             with self.subTest(name=name, target="denylist"):
                 self._check(name, "denylist")
 
-    def test_every_example_has_both_goldens(self):
+    def test_cedar_goldens(self):
+        for name in EXAMPLES:
+            with self.subTest(name=name, target="cedar"):
+                self._check(name, "cedar")
+
+    def test_every_example_has_goldens_for_every_target(self):
         for name in EXAMPLES:
             for target in TARGETS:
-                self.assertTrue((GOLDEN / f"{name}.{target}.expected").is_file())
+                with self.subTest(name=name, target=target):
+                    self.assertTrue((GOLDEN / f"{name}.{target}.expected").is_file())
 
     def test_live_export_is_deterministic(self):
         # exporting twice yields identical bytes, independent of the goldens
