@@ -11,6 +11,8 @@ etc. are never read. Values (tokens, keys) are redacted placeholders.
 | `home/` | A fake home directory scanned by `manifesto scan --home fixtures/home`. Contains `.hermes/config.yaml`, `.claude/claude_desktop_config.json`, `.cursor/mcp.json`, `.config/Code/User/mcp.json`, `.gitconfig`, `crontab.txt`. |
 | `home/manifests/hermes.manifest.yaml` | A manifest **on file** for the hermes client — deliberately carries an **expired ttl** and an **unbounded grant** so the scanner's `expired-ttl` and `unbounded-grant` findings are exercised. |
 | `unknown-home/` | A second fake home with a single **unrecognized** tool-server, used to prove the scanner is **fail-closed**: unknown servers produce `unknown: true`, never a guessed grant. |
+| `diff/` | Paired contracts for `manifesto diff` (see below). |
+| `registry/` | An org verb-registry (`acme.yaml`) plus a contract written in that org's vocabulary (`acme-deploy-bot.yaml`) for `validate --registry`. |
 | `golden/` | Byte-exact expected output for each export dialect (see below). |
 
 ## golden/ — export determinism
@@ -28,6 +30,15 @@ diff. Regenerate deliberately with `MANIFESTO_REGOLDEN=1`, then review.
 classifier and the `--strict` loosening gate from both sides (tightening passes,
 loosening exits 1) and back the README demo. All three also validate clean, so
 a diff is never run over a broken input.
+
+## registry/ — org verb-registry override
+
+`registry/acme.yaml` is a synthetic org registry (label `acme-corp`,
+`mode: extend`, `unknown_verb: warning`, an `acme` system, and risk classes
+with `require_approval: [critical]`). `registry/acme-deploy-bot.yaml` is a
+contract written in that vocabulary — it cannot validate until it is checked
+against the registry, which is exactly what `validate --registry` is for.
+Neither is a real organisation.
 
 ### APPROXIMATION — read this before trusting a golden file
 

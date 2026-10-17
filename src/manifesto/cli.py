@@ -19,7 +19,8 @@ from .diff import (as_json as diff_json, diff_files, gate_hits,
 from .export import TARGETS, export as export_fn
 from .explain import explain as explain_fn
 from .scan import CLIENT_CONFIGS, render as scan_render, scan as scan_fn
-from .schema import (ManifestError, load_manifest_file, split_findings, validate)
+from .schema import (ManifestError, load_manifest_file, load_verb_registry,
+                     split_findings, validate)
 
 
 def _print_findings(findings):
@@ -31,22 +32,33 @@ def _print_findings(findings):
 
 
 def cmd_validate(args) -> int:
+    registry = None
+    if getattr(args, "registry", None) is not None:
+        try:
+            registry = load_verb_registry(args.registry)
+        except ManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     try:
         manifest = load_manifest_file(args.manifest)
     except ManifestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    findings = validate(manifest)
+    findings = validate(manifest, registry=registry)
     errors, warnings = split_findings(findings)
 
     if args.json:
-        print(json.dumps(
-            {"manifest": str(args.manifest), "valid": not errors,
-             "error_count": len(errors), "warning_count": len(warnings),
-             "findings": [f._asdict() for f in findings]},
-            indent=2, ensure_ascii=False))
+        payload = {"manifest": str(args.manifest), "valid": not errors,
+                   "error_count": len(errors), "warning_count": len(warnings),
+                   "findings": [f._asdict() for f in findings]}
+        if registry is not None:
+            payload["registry"] = registry.describe()
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print(f"== manifesto validate | {args.manifest}")
+        if registry is not None:
+            print(f"   registry: {registry.label or args.registry} "
+                  f"(mode: {registry.mode}, unknown_verb: {registry.unknown_verb})")
         if findings:
             _print_findings(findings)
         else:
@@ -140,6 +152,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("manifest", type=Path, help="path to agent.manifest.yaml")
     v.add_argument("--json", action="store_true", help="machine-readable findings")
     v.add_argument("--strict", action="store_true", help="warnings also fail (CI)")
+    v.add_argument("--registry", metavar="FILE", type=Path, default=None,
+                   help="org verb-registry override: adds systems, maps verbs to "
+                        "risk classes, and sets the unknown-verb rule")
     v.set_defaults(func=cmd_validate)
 
     s = sub.add_parser("scan", help="read-only discovery of running tool-servers")

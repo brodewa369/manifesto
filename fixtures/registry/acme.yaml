@@ -1,0 +1,29 @@
+# fixtures/registry/acme.yaml — synthetic ORG VERB REGISTRY for `--registry`.
+# Not a real company; used by tests/test_registry.py and the README demo.
+#
+# What it declares:
+#   mode: extend          -> acme verbs are ADDED to the built-in registry
+#   unknown_verb: warning -> a verb outside the effective registry is a
+#                            warning, not an error (org tolerance for drafts)
+#   systems:              -> the org's own <system>.<verb> vocabulary
+#   risk_classes:         -> which verbs the org considers dangerous
+#   require_approval:     -> risk classes that must carry approval: required
+registry: acme-corp
+mode: extend
+unknown_verb: warning
+
+systems:
+  acme:
+    - deploy
+    - rollback
+    - status
+
+risk_classes:
+  acme.deploy: critical
+  acme.rollback: high
+  gmail.send: critical
+  payments.charge: high
+  shell.exec: critical
+
+require_approval:
+  - critical

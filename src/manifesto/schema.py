@@ -20,6 +20,13 @@ This module is the heart of manifesto. It contains:
      shadowed grants, ttl date parsing, audit cross-references, and
      delegation attenuation (``delegations`` subset/narrowing).
 
+An **org verb-registry override** (``manifesto validate --registry org.yaml``,
+:func:`load_verb_registry`) layers an organisation's own vocabulary on top:
+``mode: extend`` adds org systems to :data:`KNOWN` (``mode: replace`` makes the
+org file the only authority), ``unknown_verb: error|warning|ignore`` decides
+how verbs outside it are reported, and ``risk_classes`` + ``require_approval``
+gate chosen classes behind ``approval: required``.
+
 No ``jsonschema`` dependency — pure standard library.
 
 Findings carry a ``severity``:
@@ -104,6 +111,195 @@ AUDIT_KEYS = {"receipt_of"}
 DELEGATION_KEYS = {"from", "to", "narrower_than", "purpose", "ttl"}
 
 EXAMPLE_NAMESPACE = "gmail.read"
+
+# --------------------------------------------------------------------------- #
+# Org verb-registry override (--registry)
+# --------------------------------------------------------------------------- #
+
+#: ``mode:`` values for an org registry file.
+REGISTRY_MODES = ("extend", "replace")
+
+#: ``unknown_verb:`` rule -> the severity reported for a verb that is outside
+#: the effective registry. ``ignore`` maps to ``None``: suppress the finding.
+UNKNOWN_RULES = {"error": ERROR, "warning": WARNING, "ignore": None}
+
+#: Top-level keys an org registry file may carry (anything else is a typo).
+REGISTRY_KEYS = {"registry", "mode", "unknown_verb", "systems",
+                 "risk_classes", "require_approval"}
+
+SYSTEM_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+class VerbRegistry:
+    """An org-level override of the ``<system>.<verb>`` namespace.
+
+    Built-in registry data (:data:`KNOWN`) is *data*; this is the same idea
+    with an org's own verbs on top:
+
+    * ``mode: extend`` (default) — org systems are **added** to the built-ins;
+      ``mode: replace`` — only the org's registry is consulted, so a manifest
+      must speak the org's closed vocabulary.
+    * ``unknown_verb:`` decides what happens to a verb outside the effective
+      registry — ``error`` (default, unchanged from a bare `manifesto`),
+      ``warning``, or ``ignore``.
+    * ``risk_classes:`` maps ``<system>.<verb>`` to an org risk class, and
+      ``require_approval:`` names the classes that must be gated with
+      ``approval: required`` (finding ``missing_approval``).
+    """
+
+    def __init__(self, *, label="", mode="extend", unknown_verb="error",
+                 systems=None, risk_classes=None, require_approval=(),
+                 path=None):
+        self.label = label
+        self.mode = mode
+        self.unknown_verb = unknown_verb
+        self.systems = systems or {}
+        self.risk_classes = risk_classes or {}
+        self.require_approval = frozenset(require_approval or ())
+        self.path = path
+
+    @property
+    def unknown_severity(self):
+        """Severity for an unknown verb (``None`` = suppressed)."""
+        return UNKNOWN_RULES[self.unknown_verb]
+
+    def known(self) -> dict:
+        """Effective ``system -> {verbs}`` consulted by the validator."""
+        base = {} if self.mode == "replace" else {s: set(v) for s, v in KNOWN.items()}
+        for system, verbs in self.systems.items():
+            base.setdefault(system, set()).update(verbs)
+        return base
+
+    def risk_class(self, key):
+        """Org risk class for a grant key, or ``None``."""
+        return self.risk_classes.get(key)
+
+    def gated_risk_class(self, key):
+        """Risk class that forces ``approval: required``, or ``None``."""
+        cls = self.risk_classes.get(key)
+        return cls if cls in self.require_approval else None
+
+    def describe(self) -> dict:
+        """Machine-readable summary (surfaced by ``validate --json``)."""
+        return {
+            "label": self.label,
+            "mode": self.mode,
+            "unknown_verb": self.unknown_verb,
+            "systems": sorted(self.systems),
+            "risk_classes": len(self.risk_classes),
+            "require_approval": sorted(self.require_approval),
+            "source": str(self.path) if self.path is not None else None,
+        }
+
+
+def load_verb_registry(path) -> VerbRegistry:
+    """Load an org verb-registry file (the manifest YAML subset).
+
+    Shape::
+
+        registry: acme-corp          # optional label
+        mode: extend                 # extend (default) | replace
+        unknown_verb: error          # error (default) | warning | ignore
+        systems:
+          acme: [deploy, rollback, status]
+        risk_classes:
+          acme.deploy: critical
+        require_approval: [critical]
+
+    A registry is *authority*, so it is parsed strictly: an unreadable file, a
+    non-mapping document, an unknown top-level key, a bad ``mode``/
+    ``unknown_verb`` value, or a ``risk_classes`` entry naming a verb the
+    registry itself does not know all raise :class:`ManifestError` (CLI exit
+    2) rather than being silently skipped. A typo in an authority file must
+    never downgrade a manifest to "looks fine".
+    """
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ManifestError(f"cannot read verb registry {p}: {exc}") from exc
+    try:
+        data = load_yaml(text)
+    except Exception as exc:
+        raise ManifestError(f"cannot parse verb registry {p}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ManifestError(f"{p}: verb registry must be a mapping")
+
+    unknown_keys = {str(k) for k in data} - REGISTRY_KEYS
+    if unknown_keys:
+        raise ManifestError(
+            f"{p}: unknown registry key(s) {', '.join(sorted(unknown_keys))}; "
+            f"allowed: {', '.join(sorted(REGISTRY_KEYS))}")
+
+    label = data.get("registry") or ""
+    if not isinstance(label, str):
+        raise ManifestError(f"{p}: `registry` must be a string label")
+
+    mode = data.get("mode", "extend")
+    if mode not in REGISTRY_MODES:
+        raise ManifestError(
+            f"{p}: `mode` must be one of {', '.join(REGISTRY_MODES)} (got {mode!r})")
+
+    rule = data.get("unknown_verb", "error")
+    if rule not in UNKNOWN_RULES:
+        raise ManifestError(
+            f"{p}: `unknown_verb` must be one of {', '.join(UNKNOWN_RULES)} "
+            f"(got {rule!r})")
+
+    raw_systems = data.get("systems") or {}
+    if not isinstance(raw_systems, dict):
+        raise ManifestError(f"{p}: `systems` must map a system name to a list of verbs")
+    systems = {}
+    for system, verbs in raw_systems.items():
+        if not isinstance(system, str) or not SYSTEM_SEGMENT_RE.match(system):
+            raise ManifestError(
+                f"{p}: system name {system!r} must be one lowercase segment "
+                "(letters, digits, underscore)")
+        if not isinstance(verbs, list) or not all(isinstance(v, str) for v in verbs):
+            raise ManifestError(
+                f"{p}: system '{system}' must list its verbs, e.g. [read, write]")
+        systems[system] = tuple(sorted({v.strip() for v in verbs}))
+
+    raw_risk = data.get("risk_classes") or {}
+    if not isinstance(raw_risk, dict):
+        raise ManifestError(
+            f"{p}: `risk_classes` must map <system>.<verb> to a risk class")
+    risk_classes = {}
+    for key, cls in raw_risk.items():
+        if not isinstance(key, str) or not NAMESPACE_RE.match(key):
+            raise ManifestError(
+                f"{p}: risk class key {key!r} must be <system>.<verb> "
+                f"(e.g. {EXAMPLE_NAMESPACE})")
+        if not isinstance(cls, str) or not cls.strip():
+            raise ManifestError(
+                f"{p}: risk class for '{key}' must be a non-empty string")
+        risk_classes[key] = cls.strip()
+
+    require = data.get("require_approval") or []
+    if not isinstance(require, list) or not all(isinstance(x, str) for x in require):
+        raise ManifestError(
+            f"{p}: `require_approval` must be a list of risk-class names")
+
+    registry = VerbRegistry(label=label, mode=mode, unknown_verb=rule,
+                            systems=systems, risk_classes=risk_classes,
+                            require_approval=require, path=p)
+
+    # fail loud: a risk class naming a verb the registry cannot resolve would
+    # otherwise be silently dead authority.
+    known = registry.known()
+    for key in sorted(risk_classes):
+        system, _, verb = key.partition(".")
+        if system not in known or verb not in known[system]:
+            near = _suggest(verb, known.get(system, ()))
+            hint = (f"did you mean: {', '.join(near)}?" if near else
+                    (f"{system} verbs: {', '.join(sorted(known.get(system, ())))}"
+                     if system in known else
+                     f"unknown system '{system}' — declare it under `systems:`"))
+            raise ManifestError(
+                f"{p}: risk class for '{key}' names a verb the registry does "
+                f"not know ({hint})")
+    return registry
+
 
 # --------------------------------------------------------------------------- #
 # Published JSON Schema (the structural layer's source of truth)
@@ -448,11 +644,16 @@ def is_narrower(child, parent) -> bool:
 # Validator (structural layer derived from schema + semantic layer)
 # --------------------------------------------------------------------------- #
 
-def validate(manifest, *, now=None, schema_path_=None):
+def validate(manifest, *, now=None, schema_path_=None, registry=None):
     """Lint a loaded manifest. Returns a list of :class:`Finding` (sorted).
 
     ``schema_path_`` optionally points at an alternate schema document (used by
     the canary test to prove behaviour derives from the schema *file*).
+    ``registry`` optionally supplies an org :class:`VerbRegistry` override
+    (``--registry``): it decides which ``<system>.<verb>`` keys are known and
+    with which severity unknown ones are reported, and adds the risk-class
+    approval rule. With ``registry=None`` behaviour is byte-identical to a bare
+    ``manifesto validate``.
     """
     now = now or date.today()
     findings: list[Finding] = []
@@ -464,15 +665,19 @@ def validate(manifest, *, now=None, schema_path_=None):
 
     # ---- semantic layer: registry + business rules ----------------------- #
     if isinstance(manifest, dict):
-        _semantic(manifest, now, findings)
+        _semantic(manifest, now, findings, registry)
 
     findings.sort(key=lambda f: (f.keypath, f.code, f.message))
     return findings
 
 
-def _semantic(manifest, now, findings):
+def _semantic(manifest, now, findings, registry=None):
     def add(keypath, code, severity, message, hint=""):
         findings.append(Finding(keypath, code, severity, message, hint))
+
+    # effective verb namespace + the rule for verbs outside it
+    known = registry.known() if registry is not None else KNOWN
+    unknown_severity = registry.unknown_severity if registry is not None else ERROR
 
     # ---- ttl (date semantics; structural layer only checks it is a string) #
     ttl_raw = manifest.get("ttl")
@@ -500,19 +705,19 @@ def _semantic(manifest, now, findings):
                 continue  # structural bad_type already emitted for non-strings
             kp = f"deny[{i}]"
             if "." not in entry:
-                if entry in KNOWN:
+                if entry in known:
                     deny_namespaces.add(entry)
-                else:
-                    add(kp, "unknown_verb", ERROR,
+                elif unknown_severity is not None:
+                    add(kp, "unknown_verb", unknown_severity,
                         f"unknown system '{entry}' in deny",
-                        f"did you mean one of: {', '.join(sorted(KNOWN))[:80]}?")
+                        f"did you mean one of: {', '.join(sorted(known))[:80]}?")
             elif not NAMESPACE_RE.match(entry):
                 add(kp, "ungroupable_verb", ERROR,
                     f"'{entry}' is not a valid <system>.<verb> key",
                     f"use `<system>.<verb>`, e.g. {EXAMPLE_NAMESPACE}")
             else:
                 system, _, verb = entry.partition(".")
-                _check_namespace(kp, system, verb, add)
+                _check_namespace(kp, system, verb, add, known, unknown_severity)
                 deny_namespaces.add(entry)
 
     # ---- grants (registry, bounds, shadow) -------------------------------- #
@@ -524,7 +729,7 @@ def _semantic(manifest, now, findings):
             if not isinstance(key, str) or not NAMESPACE_RE.match(key):
                 continue  # structural propertyNames already flagged ungroupable
             system, _, verb = key.partition(".")
-            if _check_namespace(kp, system, verb, add) is False:
+            if _check_namespace(kp, system, verb, add, known, unknown_severity) is False:
                 continue
             grant_keys.append(key)
 
@@ -536,7 +741,7 @@ def _semantic(manifest, now, findings):
                     "the deny dominates, so this grant is dead",
                     "remove the conflicting deny entry, or drop this grant")
 
-            _validate_grant_value(kp, key, value, add)
+            _validate_grant_value(kp, key, value, add, registry)
 
     # ---- audit ------------------------------------------------------------- #
     audit = manifest.get("audit")
@@ -601,26 +806,38 @@ def _check_delegations(manifest, grant_keys, grants, add):
                     "tighten the child's constraints to <= the parent's, or drop it")
 
 
-def _check_namespace(keypath, system, verb, add) -> bool:
-    """Validate a ``<system>.<verb>`` pair; return False if it is unknown."""
-    if system not in KNOWN:
-        near = _suggest(system, KNOWN.keys())
+def _check_namespace(keypath, system, verb, add, known=None,
+                     unknown_severity=ERROR) -> bool:
+    """Validate a ``<system>.<verb>`` pair; return False if it is unknown.
+
+    ``known`` is the effective registry (org override applied); with
+    ``unknown_severity=None`` the unknown-verb finding is suppressed entirely
+    (``unknown_verb: ignore``) but the key still does not validate as known.
+    """
+    if known is None:
+        known = KNOWN
+    if system not in known:
+        if unknown_severity is None:
+            return False
+        near = _suggest(system, known.keys())
         hint = f"did you mean one of: {', '.join(near)}?" if near else \
-            f"known systems: {', '.join(sorted(KNOWN))}"
-        add(keypath, "unknown_verb", ERROR,
+            f"known systems: {', '.join(sorted(known))}"
+        add(keypath, "unknown_verb", unknown_severity,
             f"unknown system '{system}' (verb '{verb}')", hint)
         return False
-    if verb not in KNOWN[system]:
-        near = _suggest(verb, KNOWN[system])
+    if verb not in known[system]:
+        if unknown_severity is None:
+            return False
+        near = _suggest(verb, known[system])
         hint = f"did you mean: {', '.join(near)}?" if near else \
-            f"{system} verbs: {', '.join(sorted(KNOWN[system]))}"
-        add(keypath, "unknown_verb", ERROR,
+            f"{system} verbs: {', '.join(sorted(known[system]))}"
+        add(keypath, "unknown_verb", unknown_severity,
             f"unknown verb '{verb}' for system '{system}'", hint)
         return False
     return True
 
 
-def _validate_grant_value(keypath, key, value, add):
+def _validate_grant_value(keypath, key, value, add, registry=None):
     req = bound_requirement(key)
 
     if value is False:
@@ -628,6 +845,17 @@ def _validate_grant_value(keypath, key, value, add):
             f"grant '{key}' is set to false — use `deny:` to express refusal",
             f"move to `deny: [{key}]`")
         return
+
+    # org registry rule: a risk class the org gates behind human approval
+    gated_class = registry.gated_risk_class(key) if registry is not None else None
+    if gated_class is not None and (value is True or
+                                    (isinstance(value, dict) and value)):
+        if not (isinstance(value, dict) and value.get("approval") == "required"):
+            add(keypath, "missing_approval", ERROR,
+                f"grant '{key}' is risk class '{gated_class}' which the org "
+                "registry gates with `approval: required`",
+                "add `approval: required`, or move the class out of the "
+                "registry's `require_approval` list")
 
     if value is True:
         if req is not None:

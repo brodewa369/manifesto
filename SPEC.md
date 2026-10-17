@@ -326,7 +326,60 @@ but does not fail `--strict`; it is not an area the gate claims to own. Run
 manifesto does **not** rewrite or merge manifests — it only reports. Deciding
 whether a loosening is intended stays a human act.
 
-## 7. Changelog
+## 7. Org verb-registry override — `--registry`
+
+The built-in registry (`KNOWN` in `src/manifesto/schema.py`) is **data**, not
+code — and it is *generic*, not yours. An organisation that owns verbs of its
+own, or that wants a stricter house rule, layers a **registry file** over it:
+
+```bash
+manifesto validate agent.manifest.yaml --registry our_verbs.yaml
+```
+
+```yaml
+registry: acme-corp            # label, echoed in output and --json
+mode: extend                   # extend (default) | replace
+unknown_verb: warning          # error (default) | warning | ignore
+systems:                       # the org's own <system> -> verbs
+  acme: [deploy, rollback, status]
+risk_classes:                  # <system>.<verb> -> org risk class
+  acme.deploy: critical
+  payments.charge: high
+require_approval:              # risk classes that must be gated
+  - critical
+```
+
+| Key | Meaning |
+|-----|---------|
+| `mode: extend` | org systems are **added** to the built-ins — `gmail.read` still validates, and `acme.deploy` now does too. |
+| `mode: replace` | the file is the **only** authority: anything not declared in it (built-ins included) is an unknown verb. For orgs with a closed vocabulary. |
+| `unknown_verb:` | what happens to a verb outside the effective registry: `error` (unchanged default), `warning` (reported, fails only under `--strict`), `ignore` (suppressed entirely). |
+| `risk_classes:` | maps a grant key to an org risk class. The class itself is reported back through `validate --json`; it becomes a *rule* via `require_approval`. |
+| `require_approval:` | a listed risk class must be granted with `approval: required`, otherwise the validator emits **`missing_approval`** (error). `readonly-allowed` does **not** satisfy it — that is the point of the gate. |
+
+Behaviours worth knowing:
+
+- **A registry is authority, so it is parsed strictly.** An unreadable file, a
+  non-mapping document, an unknown top-level key, a bad `mode`/`unknown_verb`
+  value, a `systems` entry that is not a verb list, or a `risk_classes` key
+  naming a verb the registry itself does not know all raise a hard error
+  (`manifesto validate` exits `2`). Nothing is skipped silently — a typo in an
+  authority file must never downgrade a manifest to "looks fine".
+- **Risk classes are validated against the effective registry**, so
+  `risk_classes: { gmail.sendit: high }` fails at load time with a "did you
+  mean" hint instead of quietly gating nothing.
+- **The override is opt-in and scoped.** Without `--registry` the validator is
+  byte-identical to before (existing tests assert this); `--registry` affects
+  `validate` only — `scan`, `explain` and `export` read the manifest as-is.
+- `validate --json` gains a `registry` block (`label`, `mode`, `unknown_verb`,
+  `systems`, `risk_classes` count, `require_approval`, `source`) when a
+  registry is active; the human output prints a `registry:` banner line.
+
+See `fixtures/registry/acme.yaml` (the org registry) and
+`fixtures/registry/acme-deploy-bot.yaml` (a contract in the org vocabulary that
+fails without it and passes with it).
+
+## 8. Changelog
 
 ### 0.2.0 — 2026-10-17
 - **Formal machine-readable schema** published at

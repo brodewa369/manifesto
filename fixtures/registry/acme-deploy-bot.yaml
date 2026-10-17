@@ -1,0 +1,23 @@
+# fixtures/registry/acme-deploy-bot.yaml — a contract in the ORG vocabulary.
+# `acme.*` verbs exist only in fixtures/registry/acme.yaml, so this file fails
+# validation until it is checked against the org registry:
+#
+#   manifesto validate fixtures/registry/acme-deploy-bot.yaml                                -> 3 errors (unknown system 'acme')
+#   manifesto validate fixtures/registry/acme-deploy-bot.yaml --registry fixtures/registry/acme.yaml -> 0 errors
+agent: deploy-bot
+version: 1
+owner: platform-team
+description: "Deploys the org's acme stack behind an approval gate."
+ttl: 2027-09-30
+
+grants:
+  acme.status: true
+  acme.deploy:
+    approval: required
+  fs.read: true
+
+deny:
+  - acme.rollback
+
+meta:
+  registry: acme-corp
