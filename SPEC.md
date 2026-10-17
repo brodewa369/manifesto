@@ -1,7 +1,7 @@
 # RFC-0001: The `agent.manifest.yaml` job contract
 
 - Status: Accepted
-- Version: 0.2.0
+- Version: 0.3.0
 - Author: Brodewa
 - Updated: 2026-10-17
 
@@ -251,8 +251,8 @@ forbid(
   action == Action::"fs.delete",
   resource
 );
-...                                              <- payments.payout, shell.exec forbids
-// audit.receipt_of: payments.charge (APPROXIMATION: Cedar has no receipt primitive — ...)
+...                                              <- payments.payout + shell.exec forbids
+...                                              <- // audit.receipt_of: payments.charge comment
 ```
 
 ## 6. Contract diff — `manifesto diff`
@@ -380,6 +380,18 @@ See `fixtures/registry/acme.yaml` (the org registry) and
 fails without it and passes with it).
 
 ## 8. Changelog
+
+### 0.3.0 — 2026-10-17
+- **Cedar export dialect** (`export --target cedar`, §5.1): a `permit`/`forbid`
+  policy set with the manifest→Cedar mapping table in the file header; golden
+  file per example; honest caveat — APPROXIMATIONS validated byte-stable and
+  reviewed manually, **not vendor-certified**.
+- **`manifesto diff`** (§6): grants added/removed/tightened/loosened, deny,
+  expiry, delegation and audit changes as a table or `--json`, with the
+  `--strict` loosening gate (`--allow-loosening` to accept it explicitly).
+- **Org verb-registry override** (§7): `validate --registry FILE` —
+  `extend`/`replace` modes, the `unknown_verb` rule, and `risk_classes` gated
+  through `require_approval` (`missing_approval`).
 
 ### 0.2.0 — 2026-10-17
 - **Formal machine-readable schema** published at

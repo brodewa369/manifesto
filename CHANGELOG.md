@@ -3,6 +3,57 @@
 All notable changes to manifesto. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-10-17
+
+Enrichment release: a third interop dialect, contract review with a loosening
+gate, and an org-level verb registry.
+
+### Added
+- **Cedar export dialect** — `manifesto export --target cedar` emits a Cedar
+  policy set: `permit` per grant, `forbid` per `deny` entry (a Cedar `forbid`
+  always wins, matching the existing "deny dominates" rule), an extra
+  `permit` per delegated child grant, and mapping/`ttl`/`audit` as `//`
+  comments. Action ids are preserved verbatim; `amount`/`rate`/`to_domains`/
+  `approval` become `when { context.* }` predicates the enforcer supplies.
+  The manifest→Cedar mapping table with per-row fidelity marks (verbatim /
+  exact / approximation) is in `SPEC.md` §5.1, headed by the honest caveat
+  that these overrides are **approximations validated byte-stable and
+  reviewed manually — not vendor-certified**. Goldens:
+  `fixtures/golden/<example>.cedar.expected` for every example, byte-compared
+  by the same `MANIFESTO_REGOLDEN=1` mechanism as the other dialects.
+- **`manifesto diff <old> <new>`** — reports grants **added / removed /
+  tightened / loosened**, `deny` entries added/removed, expiry changes,
+  delegation changes and `audit.receipt_of` changes as a human table or
+  `--json`. Ties (identical caps/domains/gates/delegations) produce no rows;
+  a grant that moves both ways resolves worst-case (**loosened**). The
+  **loosening gate**: a loosening touching a sensitive class (`payments`,
+  `fs`/`files`, `shell`) or a previously explicitly-denied key/namespace
+  exits **1** under `--strict`, or **0** with `--allow-loosening`. Loosening
+  elsewhere is reported but does not fail the build. Exit codes 0/1/2; output
+  is deterministic. Fixtures: `fixtures/diff/{before,after-tightened,after-loosened}.yaml`.
+- **Org verb-registry override** — `manifesto validate --registry FILE` layers
+  an org file over the built-in `KNOWN` registry: `mode: extend|replace`,
+  `unknown_verb: error|warning|ignore` (unknown verbs are marked per that
+  rule), `systems:` for org-owned verbs, and `risk_classes:` +
+  `require_approval:` so a gated class granted without `approval: required`
+  raises **`missing_approval`**. The registry is authority: it is parsed
+  strictly (bad `mode`, unknown top-level key, or a risk class naming an
+  unknown verb → `ManifestError`, CLI exit `2`), and `validate --json` carries
+  a `registry` block. Fixtures: `fixtures/registry/{acme.yaml,acme-deploy-bot.yaml}`.
+
+### Changed
+- Exporters carry `manifesto 0.3.0` in their header/generator line; all
+  twelve golden files regenerated (`MANIFESTO_REGOLDEN=1`) and reviewed.
+- `TARGETS` now lists `agentward`, `denylist`, `cedar`; `validate` gained
+  `--registry`, and the CLI gained the `diff` subcommand.
+- Docs: SPEC gains §5.1 (Cedar mapping), §6 (diff + gate), §7 (registry) and
+  the Changelog moves to §8; README gains recorded end-to-end output for the
+  `cedar`, `diff` and `registry` flows.
+
+### Notes
+- 160 tests, all passing (was 87 at 0.2.0: +44 diff, +28 registry, +1 cedar
+  golden coverage; no test removed). Zero runtime dependencies (pure stdlib).
+
 ## [0.2.0] — 2026-10-17
 
 Hardening release: formal schema consumption, a fail-closed scanner, delegation
